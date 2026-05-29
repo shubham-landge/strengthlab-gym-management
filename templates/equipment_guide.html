@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">Beginner education</p>
+    <h1>Beginner's Guide to Gym Equipment</h1>
+  </div>
+  <div class="actions">
+    <a class="button" href="{{ source_url }}" target="_blank">Source website</a>
+    {% if current_user.role == "admin" %}
+    <a class="button" href="{{ url_for('equipment') }}">Inventory</a>
+    {% endif %}
+  </div>
+</header>
+
+<section class="panel guide-hero">
+  <img class="guide-hero-image" src="{{ guide[0]['image'] }}" alt="Beginner gym equipment guide">
+  <p>
+    This guide gives new members a plain-language overview of common gym equipment:
+    what each item trains, how to set it up, and the main safety cues to remember.
+  </p>
+  <div class="notice warn">
+    Use light weights first. Stop for sharp pain, dizziness, chest pain, numbness, or worsening joint pain.
+  </div>
+</section>
+
+{% for section in guide %}
+<section class="panel guide-section">
+  <div class="section-title">
+    <h2>{{ section["title"] }}</h2>
+  </div>
+  {% if section["image"] %}
+  <img class="guide-section-image" src="{{ section['image'] }}" alt="{{ section['title'] }}">
+  {% endif %}
+  <p class="guide-intro">{{ section["intro"] }}</p>
+  <div class="guide-grid">
+    {% for item in section["items"] %}
+    <article class="guide-card">
+      {% if item["image"] %}
+      <img src="{{ item['image'] }}" alt="{{ item['name'] }}">
+      {% endif %}
+      <h3>{{ item["name"] }}</h3>
+      <span class="pill good">{{ item["target"] }}</span>
+      <ul>
+        {% for step in item["how_to"] %}
+        <li>{{ step }}</li>
+        {% endfor %}
+      </ul>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endfor %}
+{% endblock %}

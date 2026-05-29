@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div><p class="eyebrow">Finance</p><h1>Payments</h1></div>
+  <form method="post" action="{{ url_for('run_payment_reminders') }}">
+    <button class="button primary" type="submit">Run due reminders</button>
+  </form>
+</header>
+
+<section class="stats-grid">
+  <div class="stat"><span>Due in next {{ reminder_days }} days</span><strong>{{ due_count }}</strong></div>
+  <div class="stat"><span>Reminder automation</span><strong>Hourly</strong></div>
+  <div class="stat"><span>Queue channel</span><strong>WhatsApp</strong></div>
+  <div class="stat"><span>Duplicates</span><strong>Blocked</strong></div>
+</section>
+
+{% if request.args.get("created") %}
+<div class="notice good">
+  Reminder scan completed: {{ request.args.get("created") }} new queued, {{ request.args.get("scanned") }} due records scanned.
+</div>
+{% endif %}
+
+<section class="panel">
+  <div class="section-title"><h2>Add payment record</h2></div>
+  <form class="grid-form compact" method="post">
+    <select name="member_id" required>{% for member in members %}<option value="{{ member.id }}">{{ member.name }}</option>{% endfor %}</select>
+    <input name="amount" type="number" step="0.01" placeholder="Amount" required>
+    <select name="status"><option>Due</option><option>Received</option></select>
+    <select name="payment_method"><option value="">Payment method</option><option>Cash</option><option>UPI</option></select>
+    <input name="due_on" type="date">
+    <input name="notes" placeholder="Notes">
+    <button class="button primary">Save and queue WhatsApp</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="section-title"><h2>Automated reminder queue</h2><a href="{{ url_for('announcements') }}">WhatsApp center</a></div>
+  <div class="stack">
+    {% for note in reminder_notifications %}
+    <div class="item-row">
+      <div><strong>{{ note.member_name }}</strong><small>{{ note.message }}</small></div>
+      <a target="_blank" href="{{ wa_link(note.phone, note.message) }}">Send</a>
+    </div>
+    {% else %}
+    <p class="empty">No automated reminders queued yet.</p>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="table-wrap">
+  <div class="section-title table-title"><h2>Payment history</h2></div>
+  <table><thead><tr><th>Member</th><th>Amount</th><th>Status</th><th>Method</th><th>Date</th><th>WhatsApp</th></tr></thead><tbody>
+  {% for payment in payments %}
+  {% set msg = 'Payment received. Thank you!' if payment.status == 'Received' else 'Payment reminder: your gym fee is due.' %}
+  <tr><td>{{ payment.member_name }}</td><td>Rs {{ payment.amount }}</td><td>{{ payment.status }}</td><td>{{ payment.payment_method or "-" }}</td><td>{{ payment.paid_on or payment.due_on }}</td><td><a target="_blank" href="{{ wa_link(payment.phone, msg) }}">Send</a></td></tr>
+  {% endfor %}
+  </tbody></table>
+</section>
+{% endblock %}

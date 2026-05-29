@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GymOS Local</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <img class="brand-logo" src="{{ url_for('static', filename='strengthlab-logo.jpeg') }}" alt="StrengthLab">
+      <div>
+        <strong>StrengthLab</strong>
+        <small>LAN dashboard</small>
+      </div>
+    </div>
+    <nav>
+      <a href="{{ url_for('index') }}">Dashboard</a>
+      {% if current_user.role == "owner" %}
+      <a href="{{ url_for('owner_dashboard') }}">Owner</a>
+      {% endif %}
+      {% if current_user.role == "accountant" %}
+      <a href="{{ url_for('accountant_dashboard') }}">Accounting</a>
+      {% endif %}
+      {% if current_user.role in ["admin", "owner", "trainer"] %}
+      <a href="{{ url_for('members') }}">Members</a>
+      <a href="{{ url_for('attendance') }}">Attendance</a>
+      {% endif %}
+      {% if current_user.role in ["admin", "owner", "accountant"] %}
+      <a href="{{ url_for('payments') }}">Payments</a>
+      <a href="{{ url_for('reports') }}">Reports</a>
+      {% endif %}
+      {% if current_user.role in ["admin", "owner"] %}
+      <a href="{{ url_for('trainers') }}">Trainers</a>
+      <a href="{{ url_for('equipment') }}">Equipment</a>
+      <a href="{{ url_for('announcements') }}">WhatsApp</a>
+      {% endif %}
+      <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+        <button type="submit">Logout</button>
+      </form>
+    </nav>
+  </aside>
+  <main class="main">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

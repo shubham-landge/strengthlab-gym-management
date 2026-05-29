@@ -1,0 +1,311 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div><p class="eyebrow">Member command center</p><h1>{{ member.name }}</h1></div>
+  <div class="actions">
+    {% if current_user.role == "admin" %}
+    <a class="button" href="{{ url_for('edit_member', member_id=member.id) }}">Edit profile</a>
+    {% endif %}
+    <a class="button" href="{{ url_for('diet_pdf', member_id=member.id) }}">Download diet PDF</a>
+    {% if current_user.role in ["admin", "trainer"] %}
+    <a class="button primary" target="_blank" href="{{ wa_link(member.phone, 'Hi ' ~ member.name ~ ', your progress update and diet plan are ready. Please check your PDF from the gym desk.') }}">WhatsApp update</a>
+    {% endif %}
+  </div>
+</header>
+
+<section class="member-hero">
+  <div class="member-hero-main">
+    <p class="eyebrow">Today · Day {{ today_plan.day_number }} · {{ today_plan.level }}</p>
+    <h2>{{ today_plan.focus }}</h2>
+    <p>{{ today_plan.nutrition }}</p>
+    <div class="hero-tags">
+      <span>{{ member.primary_fitness_goal or member.goal or "General fitness" }}</span>
+      <span>{{ member.activity_level or "Activity not set" }}</span>
+      <span>{{ member.dietary_style or "Diet not set" }}</span>
+    </div>
+  </div>
+  <div class="member-hero-side">
+    <span>Renewal</span>
+    <strong>
+      {% if today_plan.subscription_days_left is none %}
+      Not set
+      {% elif today_plan.subscription_days_left < 0 %}
+      Overdue
+      {% elif today_plan.subscription_days_left == 0 %}
+      Today
+      {% else %}
+      {{ today_plan.subscription_days_left }} days
+      {% endif %}
+    </strong>
+    <small>{{ member.subscription_end or "No renewal date" }}</small>
+  </div>
+</section>
+
+<section class="today-grid">
+  <article class="today-card accent-card">
+    <span>Warm-up</span>
+    <ul>{% for item in today_plan.warmup %}<li>{{ item }}</li>{% endfor %}</ul>
+  </article>
+  <article class="today-card workout-card">
+    <span>Workout</span>
+    <ul>{% for item in today_plan.workout_items %}<li>{{ item }}</li>{% endfor %}</ul>
+  </article>
+  <article class="today-card">
+    <span>Stretching</span>
+    <ul>{% for item in today_plan.stretch %}<li>{{ item }}</li>{% endfor %}</ul>
+  </article>
+  <article class="today-card">
+    <span>Cardio</span>
+    <p>{{ today_plan.cardio }}</p>
+  </article>
+</section>
+
+<section class="stats-grid">
+  <div class="stat"><span>Membership</span><strong>{{ member.plan_name }}</strong></div>
+  <div class="stat"><span>Payment</span><strong>{{ member.payment_status }}</strong></div>
+  <div class="stat"><span>BMI</span><strong>{{ bmi or "N/A" }}</strong></div>
+  <div class="stat"><span>Trainer</span><strong>{{ member.trainer_name or "Unassigned" }}</strong></div>
+</section>
+
+<section class="panel">
+  <div class="section-title"><h2>Fitness and nutrition questionnaire</h2></div>
+  {% if current_user.role in ["admin", "trainer"] %}
+  <form class="questionnaire-form" method="post" action="{{ url_for('update_profile_questionnaire', member_id=member.id) }}">
+    <div class="form-block">
+      <h3>1. Personal and physical biometrics</h3>
+      <div class="grid-form">
+        <label>Full name<input name="name" value="{{ member.name }}" required></label>
+        <label>Age<input name="age" type="number" value="{{ member.age or '' }}"></label>
+        <label>Current weight kg<input name="weight_kg" type="number" step="0.1" value="{{ member.weight_kg or '' }}"></label>
+        <label>Height cm<input name="height_cm" type="number" step="0.1" value="{{ member.height_cm or '' }}"></label>
+        <label class="span-3">Primary location<input name="primary_location" value="{{ member.primary_location or '' }}" placeholder="City / area for local food availability"></label>
+      </div>
+    </div>
+
+    <div class="form-block">
+      <h3>2. Primary fitness and health goal</h3>
+      <div class="choice-grid">
+        {% for option in profile_options.primary_fitness_goal %}
+        <label class="radio-card"><input type="radio" name="primary_fitness_goal" value="{{ option }}" {% if member.primary_fitness_goal == option or member.goal == option %}checked{% endif %}> {{ option }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="form-block">
+      <h3>3. Daily activity and lifestyle level</h3>
+      <select name="activity_level">
+        <option value="">Select activity level</option>
+        {% for option in profile_options.activity_level %}
+        <option value="{{ option }}" {% if member.activity_level == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="form-block">
+      <h3>4. Dietary style and preferences</h3>
+      <select name="dietary_style">
+        <option value="">Select dietary style</option>
+        {% for option in profile_options.dietary_style %}
+        <option value="{{ option }}" {% if member.dietary_style == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+      <div class="checkbox-grid">
+        {% for option in profile_options.food_exclusions %}
+        <label class="check"><input type="checkbox" name="food_exclusions" value="{{ option }}" {% if option in selected_food_exclusions %}checked{% endif %}> {{ option }}</label>
+        {% endfor %}
+      </div>
+      <label>Other foods disliked/avoided<input name="other_foods_avoided" value="{{ member.other_foods_avoided or '' }}"></label>
+    </div>
+
+    <div class="form-block">
+      <h3>5. Meal structure and logistics</h3>
+      <div class="grid-form">
+        <label>Meals per day
+          <select name="meals_per_day">
+            <option value="">Select meals</option>
+            {% for option in profile_options.meals_per_day %}
+            <option value="{{ option }}" {% if member.meals_per_day == option %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Cooking and prep preference
+          <select name="cooking_preference">
+            <option value="">Select preference</option>
+            {% for option in profile_options.cooking_preference %}
+            <option value="{{ option }}" {% if member.cooking_preference == option %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="form-block">
+      <h3>6. Medical and health metrics</h3>
+      <div class="checkbox-grid">
+        {% for option in profile_options.medical_conditions %}
+        <label class="check"><input type="checkbox" name="medical_conditions" value="{{ option }}" {% if option in selected_medical_conditions %}checked{% endif %}> {{ option }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="form-block">
+      <h3>7. Supplements and extra preferences</h3>
+      <div class="checkbox-grid">
+        {% for option in profile_options.supplements %}
+        <label class="check"><input type="checkbox" name="supplements" value="{{ option }}" {% if option in selected_supplements %}checked{% endif %}> {{ option }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <button class="button primary" type="submit">Save questionnaire</button>
+  </form>
+  {% else %}
+  <div class="profile-readonly">
+    <div><span>Goal</span><strong>{{ member.primary_fitness_goal or member.goal or "Not filled" }}</strong></div>
+    <div><span>Activity</span><strong>{{ member.activity_level or "Not filled" }}</strong></div>
+    <div><span>Diet</span><strong>{{ member.dietary_style or "Not filled" }}</strong></div>
+    <div><span>Meals</span><strong>{{ member.meals_per_day or "Not filled" }}</strong></div>
+    <div><span>Prep</span><strong>{{ member.cooking_preference or "Not filled" }}</strong></div>
+    <div><span>Location</span><strong>{{ member.primary_location or "Not filled" }}</strong></div>
+  </div>
+  <div class="readonly-lists">
+    <p><strong>Food exclusions:</strong> {{ selected_food_exclusions|join(", ") if selected_food_exclusions else "None recorded" }}</p>
+    <p><strong>Medical conditions:</strong> {{ selected_medical_conditions|join(", ") if selected_medical_conditions else "None recorded" }}</p>
+    <p><strong>Supplements:</strong> {{ selected_supplements|join(", ") if selected_supplements else "None recorded" }}</p>
+    <p><strong>Other avoided foods:</strong> {{ member.other_foods_avoided or "None recorded" }}</p>
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="section-title"><h2>Progress tracking</h2></div>
+  <div class="stats-grid progress-stats">
+    <div class="stat"><span>Latest weight</span><strong>{{ progress_summary.latest.weight_kg if progress_summary.latest and progress_summary.latest.weight_kg else "N/A" }}</strong></div>
+    <div class="stat"><span>Weight change</span><strong>{{ progress_summary.weight_change if progress_summary.weight_change is not none else "N/A" }}</strong></div>
+    <div class="stat"><span>Waist change</span><strong>{{ progress_summary.waist_change if progress_summary.waist_change is not none else "N/A" }}</strong></div>
+    <div class="stat"><span>Workout completion</span><strong>{{ progress_summary.latest.workout_completion if progress_summary.latest else "N/A" }}{% if progress_summary.latest %}%{% endif %}</strong></div>
+  </div>
+
+  {% if progress_entries %}
+  <div class="progress-chart">
+    {% for entry in progress_entries|reverse %}
+    <div class="progress-point">
+      <span style="height: {{ [entry.workout_completion or 0, 100]|min }}%"></span>
+      <small>{{ entry.entry_date[5:] }}</small>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">No progress records yet.</p>
+  {% endif %}
+</section>
+
+{% if current_user.role in ["admin", "trainer"] %}
+<section class="panel">
+  <div class="section-title"><h2>Add progress entry</h2></div>
+  <form class="grid-form" method="post" action="{{ url_for('add_progress', member_id=member.id) }}">
+    <label>Date<input name="entry_date" type="date" value="{{ today() }}"></label>
+    <label>Weight kg<input name="weight_kg" type="number" step="0.1"></label>
+    <label>Body fat %<input name="body_fat_percent" type="number" step="0.1"></label>
+    <label>Chest cm<input name="chest_cm" type="number" step="0.1"></label>
+    <label>Waist cm<input name="waist_cm" type="number" step="0.1"></label>
+    <label>Hips cm<input name="hips_cm" type="number" step="0.1"></label>
+    <label>Workout completion %<input name="workout_completion" type="number" min="0" max="100" value="0"></label>
+    <label>Energy level
+      <select name="energy_level">
+        <option value="">Not recorded</option>
+        {% for level in range(1, 11) %}<option value="{{ level }}">{{ level }}/10</option>{% endfor %}
+      </select>
+    </label>
+    <label class="check field-check"><input type="checkbox" name="send_progress_update"> Queue WhatsApp update</label>
+    <label class="span-3">Trainer notes<textarea name="notes" rows="2"></textarea></label>
+    <button class="button primary" type="submit">Save progress</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="panel">
+  <div class="section-title"><h2>Progress history</h2></div>
+  <div class="table-wrap flat-table">
+    <table>
+      <thead><tr><th>Date</th><th>Weight</th><th>Body fat</th><th>Chest</th><th>Waist</th><th>Hips</th><th>Completion</th><th>Energy</th><th>Notes</th><th></th></tr></thead>
+      <tbody>
+        {% for entry in progress_entries %}
+        <tr>
+          <td>{{ entry.entry_date }}</td>
+          <td>{{ entry.weight_kg or "-" }}</td>
+          <td>{{ entry.body_fat_percent or "-" }}</td>
+          <td>{{ entry.chest_cm or "-" }}</td>
+          <td>{{ entry.waist_cm or "-" }}</td>
+          <td>{{ entry.hips_cm or "-" }}</td>
+          <td>{{ entry.workout_completion }}%</td>
+          <td>{{ entry.energy_level or "-" }}</td>
+          <td>{{ entry.notes or "-" }}</td>
+          <td>
+            {% if current_user.role in ["admin", "trainer"] %}
+            <form method="post" action="{{ url_for('delete_progress', member_id=member.id, progress_id=entry.id) }}">
+              <button class="link-button" type="submit">Delete</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="two-col">
+  <article class="panel">
+    <div class="section-title"><h2>Workout routine</h2>
+      {% if current_user.role in ["admin", "trainer"] %}
+      <form method="post" action="{{ url_for('regenerate', member_id=member.id) }}"><button class="link-button">Regenerate</button></form>
+      {% endif %}
+    </div>
+    {% if current_user.role in ["admin", "trainer"] %}
+    <div class="notice {{ 'good' if ai_enabled else 'warn' }}">
+      {% if ai_enabled %}AI plan generation enabled with {{ openai_model }}.{% else %}Set OPENAI_API_KEY to enable AI plan generation.{% endif %}
+    </div>
+    {% endif %}
+    {% if current_user.role in ["admin", "member"] %}
+    <form class="template-picker" method="post" action="{{ url_for('apply_workout_template', member_id=member.id) }}">
+      <label>Apply prebuilt workout template
+        <select name="template_key" required>
+          <option value="">Choose template</option>
+          {% for key, template in workout_templates.items() %}
+          <option value="{{ key }}">{{ template.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button class="button" type="submit">Apply template</button>
+    </form>
+    <form class="plan-editor" method="post" action="{{ url_for('update_member_plans', member_id=member.id) }}">
+      <label>Workout plan<textarea name="workout_plan" rows="14">{{ member.workout_plan or '' }}</textarea></label>
+      <label>Diet plan<textarea name="diet_plan" rows="14">{{ member.diet_plan or '' }}</textarea></label>
+      <button class="button primary" type="submit">Save plan changes</button>
+    </form>
+    {% else %}
+    <pre>{{ member.workout_plan or "No workout plan generated yet." }}</pre>
+    {% endif %}
+  </article>
+  <article class="panel">
+    <h2>Diet plan</h2>
+    {% if current_user.role in ["admin", "member"] %}
+    <div class="notice good">Use the plan editor on the left to add or update workout and diet details.</div>
+    {% else %}
+    <pre>{{ member.diet_plan or "No diet plan generated yet." }}</pre>
+    {% endif %}
+  </article>
+</section>
+
+<section class="two-col">
+  <div class="panel">
+    <h2>Payments</h2>
+    {% for payment in payments %}<div class="item-row"><span>Rs {{ payment.amount }} · {{ payment.status }}</span><small>{{ payment.paid_on or payment.due_on }}</small></div>{% else %}<p class="empty">No payment records.</p>{% endfor %}
+  </div>
+  <div class="panel">
+    <h2>Notification log</h2>
+    {% for note in notifications %}<div class="item-row"><span>{{ note.message }}</span><small>{{ note.created_at }}</small></div>{% else %}<p class="empty">No notifications yet.</p>{% endfor %}
+  </div>
+</section>
+{% endblock %}

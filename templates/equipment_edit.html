@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div><p class="eyebrow">Inventory</p><h1>Edit {{ item.name }}</h1></div>
+  <a class="button" href="{{ url_for('equipment') }}">Back to equipment</a>
+</header>
+
+<section class="panel">
+  <form class="grid-form compact" method="post">
+    <label>Name<input name="name" value="{{ item.name }}" required></label>
+    <label>Category<input name="category" value="{{ item.category or '' }}"></label>
+    <label>Quantity<input name="quantity" type="number" min="0" value="{{ item.quantity }}"></label>
+    <label>Condition
+      <select name="condition_status">
+        {% for status in ["Good", "Service Soon", "Out of Service"] %}
+        <option value="{{ status }}" {% if item.condition_status == status %}selected{% endif %}>{{ status }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Maintenance due<input name="maintenance_due" type="date" value="{{ item.maintenance_due or '' }}"></label>
+    <button class="button primary" type="submit">Save equipment</button>
+  </form>
+</section>
+{% endblock %}

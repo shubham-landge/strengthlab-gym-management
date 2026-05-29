@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header"><div><p class="eyebrow">Front desk</p><h1>Attendance</h1></div></header>
+<section class="panel">
+  <form class="inline-form" method="post">
+    <select name="member_id" required>{% for member in members %}<option value="{{ member.id }}">{{ member.name }}</option>{% endfor %}</select>
+    <button class="button primary" name="action" value="in">Check in</button>
+    <button class="button" name="action" value="out">Check out</button>
+  </form>
+</section>
+<section class="table-wrap">
+  <table><thead><tr><th>Member</th><th>Check in</th><th>Check out</th></tr></thead><tbody>
+  {% for row in attendance %}<tr><td>{{ row.member_name }}</td><td>{{ row.check_in }}</td><td>{{ row.check_out or "Open" }}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+{% endblock %}

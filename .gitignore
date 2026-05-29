@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+gym_manager.db
+instance/
+.env

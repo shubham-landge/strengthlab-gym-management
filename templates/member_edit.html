@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">Admin</p>
+    <h1>Edit {{ member.name }}</h1>
+  </div>
+  <div class="actions">
+    <a class="button" href="{{ url_for('member_detail', member_id=member.id) }}">Back to profile</a>
+    <a class="button" href="{{ url_for('diet_pdf', member_id=member.id) }}">Diet PDF</a>
+  </div>
+</header>
+
+<form method="post" class="edit-layout">
+  <section class="panel">
+    <div class="section-title"><h2>Personal details</h2></div>
+    <div class="grid-form">
+      <label>Full name<input name="name" value="{{ member.name }}" required></label>
+      <label>WhatsApp phone<input name="phone" value="{{ member.phone }}" required></label>
+      <label>Email<input name="email" type="email" value="{{ member.email or '' }}"></label>
+      <label>Age<input name="age" type="number" value="{{ member.age or '' }}"></label>
+      <label>Gender
+        <select name="gender">
+          <option value="">Select gender</option>
+          {% for gender in ["Female", "Male", "Other"] %}
+          <option value="{{ gender }}" {% if member.gender == gender %}selected{% endif %}>{{ gender }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Emergency contact<input name="emergency_contact" value="{{ member.emergency_contact or '' }}"></label>
+      <label class="span-3">Address<textarea name="address" rows="2">{{ member.address or '' }}</textarea></label>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-title"><h2>Health and fitness</h2></div>
+    <div class="grid-form">
+      <label>Height cm<input name="height_cm" type="number" step="0.1" value="{{ member.height_cm or '' }}"></label>
+      <label>Weight kg<input name="weight_kg" type="number" step="0.1" value="{{ member.weight_kg or '' }}"></label>
+      <label>Fitness level
+        <select name="fitness_level">
+          {% for level in ["Beginner", "Intermediate", "Advanced", "Rehab / low impact"] %}
+          <option value="{{ level }}" {% if member.fitness_level == level %}selected{% endif %}>{{ level }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="span-3">Goal<input name="goal" value="{{ member.goal or '' }}" placeholder="Fat loss, muscle gain, endurance, mobility"></label>
+      <label class="span-3">Food preference<input name="food_preference" value="{{ member.food_preference or '' }}" placeholder="Vegetarian, eggetarian, high protein Indian meals, allergies"></label>
+      <label class="span-3">Health declaration<textarea name="medical_notes" rows="3">{{ member.medical_notes or '' }}</textarea></label>
+      <label class="span-3">Injury notes<textarea name="injury_notes" rows="2">{{ member.injury_notes or '' }}</textarea></label>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-title"><h2>Membership</h2></div>
+    <div class="grid-form">
+      <label>Plan
+        <select name="plan_name">
+          {% for plan in ["Monthly", "Quarterly", "Annual"] %}
+          <option value="{{ plan }}" {% if member.plan_name == plan %}selected{% endif %}>{{ plan }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Trainer
+        <select name="trainer_id">
+          <option value="">Unassigned</option>
+          {% for trainer in trainers %}
+          <option value="{{ trainer.id }}" {% if member.trainer_id == trainer.id %}selected{% endif %}>{{ trainer.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Payment status
+        <select name="payment_status">
+          {% for status in ["Due", "Paid"] %}
+          <option value="{{ status }}" {% if member.payment_status == status %}selected{% endif %}>{{ status }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Start date<input name="subscription_start" type="date" value="{{ member.subscription_start }}"></label>
+      <label>End date<input name="subscription_end" type="date" value="{{ member.subscription_end }}"></label>
+      <label class="check field-check"><input type="checkbox" name="premium" {% if member.premium %}checked{% endif %}> Premium diet and review</label>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-title"><h2>Workout and diet plans</h2></div>
+    <div class="notice {{ 'good' if ai_enabled else 'warn' }}">
+      {% if ai_enabled %}
+      AI generation is enabled with {{ openai_model }}. Regeneration will use OpenAI first, then fall back locally if needed.
+      {% else %}
+      AI generation is not configured. Add OPENAI_API_KEY to use OpenAI; regeneration will use the local fallback until then.
+      {% endif %}
+    </div>
+    <div class="two-col edit-plans">
+      <label>Workout plan<textarea name="workout_plan" rows="14">{{ member.workout_plan or '' }}</textarea></label>
+      <label>Diet plan<textarea name="diet_plan" rows="14">{{ member.diet_plan or '' }}</textarea></label>
+    </div>
+    <div class="form-options">
+      <label class="check"><input type="checkbox" name="regenerate_plans"> Regenerate plans from updated health data</label>
+      <label class="check"><input type="checkbox" name="send_profile_update"> Queue WhatsApp profile update</label>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-title"><h2>Member login</h2></div>
+    <div class="grid-form">
+      <div class="readonly-field">
+        <span>Username</span>
+        <strong>{{ member_login.username if member_login else "Will be created from phone" }}</strong>
+      </div>
+      <label>New password<input name="new_password" type="password" autocomplete="new-password" placeholder="Leave blank to keep current password"></label>
+      <div class="readonly-field">
+        <span>Default password</span>
+        <strong>{{ default_password or "Add phone first" }}</strong>
+      </div>
+      <div class="readonly-field">
+        <span>Status</span>
+        <strong>{{ "Active" if not member_login or member_login.active else "Inactive" }}</strong>
+      </div>
+    </div>
+  </section>
+
+  <div class="sticky-actions">
+    <button class="button primary" type="submit">Save member</button>
+    <a class="button" href="{{ url_for('member_detail', member_id=member.id) }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

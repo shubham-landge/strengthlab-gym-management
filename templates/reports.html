@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header"><div><p class="eyebrow">Analytics</p><h1>Reports</h1></div></header>
+<section class="stats-grid">
+  <div class="stat"><span>Revenue this month</span><strong>Rs {{ "%.2f"|format(monthly_revenue) }}</strong></div>
+  <div class="stat"><span>Outstanding dues</span><strong>Rs {{ "%.2f"|format(due_total) }}</strong></div>
+</section>
+<section class="two-col">
+  <div class="panel"><h2>Attendance trend</h2>{% for row in attendance_by_day %}<div class="bar-row"><span>{{ row.day }}</span><div><i style="width: {{ [row.visits * 12, 100]|min }}%"></i></div><b>{{ row.visits }}</b></div>{% else %}<p class="empty">No attendance yet.</p>{% endfor %}</div>
+  <div class="panel"><h2>Subscription watch</h2>{% for member in active_members %}<div class="item-row"><span>{{ member.name }}</span><small>{{ member.subscription_end }} · {{ member.payment_status }}</small></div>{% endfor %}</div>
+</section>
+{% endblock %}

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div><p class="eyebrow">Inventory</p><h1>Equipment</h1></div>
+  <div class="actions">
+    <a class="button" href="{{ url_for('equipment_guide') }}">Beginner guide</a>
+    <form method="post" action="{{ url_for('seed_equipment_route') }}">
+      <button class="button primary" type="submit">Add prebuilt equipment</button>
+    </form>
+  </div>
+</header>
+
+{% if request.args.get("created") %}
+<div class="notice good">{{ request.args.get("created") }} missing prebuilt equipment item(s) added.</div>
+{% endif %}
+
+<section class="panel">
+  <form class="grid-form compact" method="post">
+    <input name="name" placeholder="Equipment name" required>
+    <input name="category" placeholder="Category">
+    <input name="quantity" type="number" placeholder="Qty" value="1">
+    <select name="condition_status"><option>Good</option><option>Service Soon</option><option>Out of Service</option></select>
+    <input name="maintenance_due" type="date">
+    <button class="button primary">Add equipment</button>
+  </form>
+</section>
+<section class="table-wrap">
+  <table><thead><tr><th>Name</th><th>Category</th><th>Qty</th><th>Condition</th><th>Maintenance</th><th></th></tr></thead><tbody>
+  {% for item in equipment %}
+  <tr>
+    <td>{{ item.name }}</td>
+    <td>{{ item.category }}</td>
+    <td>{{ item.quantity }}</td>
+    <td><span class="pill {{ 'good' if item.condition_status == 'Good' else 'warn' }}">{{ item.condition_status }}</span></td>
+    <td>{{ item.maintenance_due }}</td>
+    <td class="actions-cell">
+      <a href="{{ url_for('edit_equipment', equipment_id=item.id) }}">Edit</a>
+      <form method="post" action="{{ url_for('delete_equipment', equipment_id=item.id) }}">
+        <button class="link-button" type="submit">Delete</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody></table>
+</section>
+{% endblock %}

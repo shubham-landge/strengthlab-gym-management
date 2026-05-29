@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div><p class="eyebrow">Owner</p><h1>Business overview</h1></div>
+  <div class="actions">
+    <a class="button" href="{{ url_for('payments') }}">Payments</a>
+    <a class="button" href="{{ url_for('reports') }}">Reports</a>
+  </div>
+</header>
+
+<section class="stats-grid">
+  <div class="stat"><span>Members</span><strong>{{ stats.members }}</strong></div>
+  <div class="stat"><span>Revenue this month</span><strong>Rs {{ "%.0f"|format(finance.monthly_revenue) }}</strong></div>
+  <div class="stat"><span>Dues pending</span><strong>Rs {{ "%.0f"|format(finance.due_total) }}</strong></div>
+  <div class="stat"><span>Visits today</span><strong>{{ stats.today_attendance }}</strong></div>
+</section>
+
+<section class="two-col">
+  <div class="panel">
+    <div class="section-title"><h2>Collection split</h2></div>
+    <div class="stack">
+      <div class="item-row"><span>Cash collected</span><strong>Rs {{ "%.0f"|format(finance.cash_total) }}</strong></div>
+      <div class="item-row"><span>UPI collected</span><strong>Rs {{ "%.0f"|format(finance.upi_total) }}</strong></div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="section-title"><h2>Attendance trend</h2></div>
+    {% for row in attendance_by_day %}
+    <div class="bar-row"><span>{{ row.day }}</span><div><i style="width: {{ [row.visits * 12, 100]|min }}%"></i></div><b>{{ row.visits }}</b></div>
+    {% else %}
+    <p class="empty">No attendance yet.</p>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="two-col">
+  <div class="panel">
+    <div class="section-title"><h2>Upcoming renewals</h2></div>
+    <div class="stack">
+      {% for member in renewals %}
+      <div class="item-row"><div><strong>{{ member.name }}</strong><small>{{ member.phone }}</small></div><span>{{ member.subscription_end }} · {{ member.payment_status }}</span></div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="panel">
+    <div class="section-title"><h2>Equipment watch</h2></div>
+    <div class="stack">
+      {% for item in equipment_watch %}
+      <div class="item-row"><div><strong>{{ item.name }}</strong><small>{{ item.category }}</small></div><span class="pill warn">{{ item.condition_status }}</span></div>
+      {% else %}
+      <p class="empty">No equipment needs attention.</p>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endblock %}

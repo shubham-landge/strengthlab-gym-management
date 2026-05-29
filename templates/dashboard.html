@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">Operations</p>
+    <h1>StrengthLab dashboard</h1>
+  </div>
+  <a class="button primary" href="{{ url_for('members') }}">Add member</a>
+</header>
+
+<section class="stats-grid">
+  <div class="stat"><span>Members</span><strong>{{ stats.members }}</strong></div>
+  <div class="stat"><span>Active trainers</span><strong>{{ stats.trainers }}</strong></div>
+  <div class="stat"><span>Payments due</span><strong>{{ stats.due_payments }}</strong></div>
+  <div class="stat"><span>Visits today</span><strong>{{ stats.today_attendance }}</strong></div>
+</section>
+
+<section class="two-col">
+  <div>
+    <div class="section-title"><h2>Recent members</h2><a href="{{ url_for('members') }}">View all</a></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Goal</th><th>Trainer</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for member in members[:6] %}
+          <tr>
+            <td><a href="{{ url_for('member_detail', member_id=member.id) }}">{{ member.name }}</a></td>
+            <td>{{ member.goal or "General fitness" }}</td>
+            <td>{{ member.trainer_name or "Unassigned" }}</td>
+            <td><span class="pill {{ 'good' if member.payment_status == 'Paid' else 'warn' }}">{{ member.payment_status }}</span></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div>
+    <div class="section-title"><h2>Equipment watch</h2><a href="{{ url_for('equipment') }}">Manage</a></div>
+    <div class="stack">
+      {% for item in equipment %}
+      <div class="item-row">
+        <div><strong>{{ item.name }}</strong><small>{{ item.category }} · Qty {{ item.quantity }}</small></div>
+        <span class="pill {{ 'warn' if item.condition_status != 'Good' else 'good' }}">{{ item.condition_status }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="section-title"><h2>Announcements</h2><a href="{{ url_for('announcements') }}">Broadcast</a></div>
+  <div class="cards">
+    {% for note in announcements %}
+    <article class="card"><h3>{{ note.title }}</h3><p>{{ note.message }}</p><small>{{ note.created_at }}</small></article>
+    {% else %}
+    <p class="empty">No announcements yet.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}
