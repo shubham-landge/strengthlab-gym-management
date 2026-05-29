@@ -11,10 +11,17 @@
 </header>
 
 <section class="stats-grid">
-  <div class="stat"><span>Due in next {{ reminder_days }} days</span><strong>{{ due_count }}</strong></div>
-  <div class="stat"><span>Reminder automation</span><strong>Hourly</strong></div>
-  <div class="stat"><span>Queue channel</span><strong>WhatsApp</strong></div>
-  <div class="stat"><span>Duplicates</span><strong>Blocked</strong></div>
+  <div class="stat"><span>MRR projection</span><strong>Rs {{ "%.0f"|format(finance.mrr) }}</strong><small>Current month collected + pending</small></div>
+  <div class="stat finance-gauge-card">
+    <span>Collected vs pending</span>
+    {% set total_flow = finance.current_month_collected + finance.current_month_pending %}
+    {% set collected_pct = ((finance.current_month_collected / total_flow) * 100) if total_flow else 0 %}
+    <strong>{{ "%.0f"|format(collected_pct) }}%</strong>
+    <div class="finance-gauge"><i style="width: {{ collected_pct }}%"></i></div>
+    <small>Rs {{ "%.0f"|format(finance.current_month_collected) }} collected / Rs {{ "%.0f"|format(finance.current_month_pending) }} pending</small>
+  </div>
+  <div class="stat"><span>Churn risk</span><strong>{{ finance.churn_risk }}</strong><small>Expired in past 48 hours</small></div>
+  <div class="stat"><span>Due in next {{ reminder_days }} days</span><strong>{{ due_count }}</strong><small>Auto-reminder scan</small></div>
 </section>
 
 {% if request.args.get("created") %}
@@ -22,6 +29,36 @@
   Reminder scan completed: {{ request.args.get("created") }} new queued, {{ request.args.get("scanned") }} due records scanned.
 </div>
 {% endif %}
+{% if request.args.get("batch") %}
+<div class="notice good">Batch action completed: {{ request.args.get("batch") }} record(s) updated.</div>
+{% endif %}
+
+<section class="finance-visuals">
+  <article class="panel chart-panel">
+    <div class="section-title"><h2>Revenue velocity</h2><small>Daily collections this month</small></div>
+    <svg class="line-chart" viewBox="0 0 300 140" role="img">
+      <polyline points="{% for point in charts.daily_points %}{{ point.x }},{{ point.y }} {% endfor %}" />
+      {% for point in charts.daily_points %}
+      <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4"><title>{{ point.day }} · Rs {{ point.total }}</title></circle>
+      {% endfor %}
+    </svg>
+  </article>
+  <article class="panel chart-panel">
+    <div class="section-title"><h2>Payment method split</h2><small>Cash flow settlement</small></div>
+    <div class="method-bar">
+      {% for item in charts.method_split %}
+      <i class="method-{{ item.method|lower|replace(' ', '-') }}" style="width: {{ item.percent }}%" title="{{ item.method }} {{ item.percent }}%"></i>
+      {% endfor %}
+    </div>
+    <div class="method-legend">
+      {% for item in charts.method_split %}
+      <span><b></b>{{ item.method }} · {{ item.percent }}%</span>
+      {% else %}
+      <span>No collections yet</span>
+      {% endfor %}
+    </div>
+  </article>
+</section>
 
 <section class="panel">
   <div class="section-title"><h2>Add payment record</h2></div>
@@ -30,7 +67,7 @@
     <input name="amount" type="number" step="0.01" placeholder="Amount" required>
     <input name="discount_amount" type="number" step="0.01" placeholder="Discount" value="0">
     <select name="status"><option>Due</option><option>Received</option></select>
-    <select name="payment_method"><option value="">Payment method</option><option>Cash</option><option>UPI</option></select>
+    <select name="payment_method"><option value="">Payment method</option><option>Cash</option><option>UPI</option><option>Card</option></select>
     <input name="upi_transaction_id" placeholder="UPI transaction ID">
     <input name="due_on" type="date">
     <select name="plan_name"><option>Monthly</option><option>Quarterly</option><option>Annual</option></select>
@@ -42,26 +79,37 @@
 </section>
 
 <section class="panel">
-  <div class="section-title"><h2>Automated reminder queue</h2><a href="{{ url_for('announcements') }}">WhatsApp center</a></div>
+  <div class="section-title"><h2>Automated reminder queue</h2><a class="queue-live" href="{{ url_for('announcements') }}"><span></span>WhatsApp center</a></div>
+  <form method="post" action="{{ url_for('payment_batch_action') }}">
+    <div class="batch-actions">
+      <button class="button" name="action" value="queue_reminders">Batch send reminders</button>
+    </div>
   <div class="stack">
     {% for note in reminder_notifications %}
     <div class="item-row">
-      <div><strong>{{ note.member_name }}</strong><small>{{ note.message }}</small></div>
+      <label class="row-check"><input type="checkbox" name="notification_ids" value="{{ note.id }}"></label>
+      <div><strong>{{ note.member_name }}</strong><small>{{ note.message }}</small><small>Status: {{ note.status }}</small></div>
       <a target="_blank" href="{{ wa_link(note.phone, note.message) }}">Send</a>
     </div>
     {% else %}
     <p class="empty">No automated reminders queued yet.</p>
     {% endfor %}
   </div>
+  </form>
 </section>
 
 <section class="table-wrap">
   <div class="section-title table-title"><h2>Payment history</h2></div>
+  <form method="post" action="{{ url_for('payment_batch_action') }}">
+  <div class="batch-actions table-title">
+    <button class="button" name="action" value="queue_reminders">Batch send reminders</button>
+    <button class="button primary" name="action" value="mark_paid">Bulk mark as paid</button>
+  </div>
   <table><thead><tr><th>Invoice</th><th>Member</th><th>Amount</th><th>Discount</th><th>Net</th><th>Status</th><th>Method</th><th>UPI ID</th><th>Date</th><th>Receipt</th><th>WhatsApp</th></tr></thead><tbody>
   {% for payment in payments %}
   {% set msg = 'Payment received. Thank you!' if payment.status == 'Received' else 'Payment reminder: your gym fee is due.' %}
   <tr>
-    <td>{{ payment.invoice_number or "-" }}</td>
+    <td><input type="checkbox" name="payment_ids" value="{{ payment.id }}"> {{ payment.invoice_number or "-" }}</td>
     <td>{{ payment.member_name }}</td>
     <td>Rs {{ payment.amount }}</td>
     <td>Rs {{ payment.discount_amount or 0 }}</td>
@@ -75,6 +123,7 @@
   </tr>
   {% endfor %}
   </tbody></table>
+  </form>
 </section>
 
 <section class="panel">

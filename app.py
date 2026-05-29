@@ -1199,6 +1199,23 @@ def dashboard_stats():
 
 
 def finance_stats():
+    current_month_filter = "strftime('%Y-%m', COALESCE(paid_on, due_on)) = strftime('%Y-%m', 'now')"
+    collected = query_one(
+        f"SELECT COALESCE(SUM(COALESCE(net_amount, amount)), 0) AS total FROM payments WHERE status = 'Received' AND {current_month_filter}"
+    )["total"]
+    pending = query_one(
+        f"SELECT COALESCE(SUM(COALESCE(net_amount, amount)), 0) AS total FROM payments WHERE status = 'Due' AND {current_month_filter}"
+    )["total"]
+    churn_risk = query_one(
+        """
+        SELECT COUNT(*) AS count
+        FROM members
+        WHERE payment_status != 'Paid'
+          AND subscription_end IS NOT NULL
+          AND date(subscription_end) < date('now')
+          AND date(subscription_end) >= date('now', '-2 day')
+        """
+    )["count"]
     return {
         "monthly_revenue": query_one(
             "SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE status = 'Received' AND strftime('%Y-%m', paid_on) = strftime('%Y-%m', 'now')"
@@ -1210,6 +1227,13 @@ def finance_stats():
         "upi_total": query_one(
             "SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE status = 'Received' AND payment_method = 'UPI' AND strftime('%Y-%m', paid_on) = strftime('%Y-%m', 'now')"
         )["total"],
+        "card_total": query_one(
+        "SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE status = 'Received' AND payment_method = 'Card' AND strftime('%Y-%m', paid_on) = strftime('%Y-%m', 'now')"
+        )["total"],
+        "current_month_collected": collected,
+        "current_month_pending": pending,
+        "mrr": collected + pending,
+        "churn_risk": churn_risk,
     }
 
 
@@ -1227,6 +1251,41 @@ def money_value(value):
         return round(float(value or 0), 2)
     except (TypeError, ValueError):
         return 0.0
+
+
+def finance_chart_data():
+    daily_rows = query_all(
+        """
+        SELECT paid_on AS day, COALESCE(SUM(COALESCE(net_amount, amount)), 0) AS total
+        FROM payments
+        WHERE status = 'Received'
+          AND paid_on IS NOT NULL
+          AND strftime('%Y-%m', paid_on) = strftime('%Y-%m', 'now')
+        GROUP BY paid_on
+        ORDER BY paid_on
+        """
+    )
+    method_rows = query_all(
+        """
+        SELECT COALESCE(payment_method, 'Unspecified') AS method, COALESCE(SUM(COALESCE(net_amount, amount)), 0) AS total
+        FROM payments
+        WHERE status = 'Received'
+          AND strftime('%Y-%m', paid_on) = strftime('%Y-%m', 'now')
+        GROUP BY COALESCE(payment_method, 'Unspecified')
+        """
+    )
+    max_daily = max([row["total"] for row in daily_rows], default=1)
+    points = []
+    for index, row in enumerate(daily_rows):
+        x = 20 + index * (260 / max(len(daily_rows) - 1, 1))
+        y = 120 - ((row["total"] / max_daily) * 90)
+        points.append({"x": round(x, 1), "y": round(y, 1), "day": row["day"], "total": row["total"]})
+    total_methods = sum(row["total"] for row in method_rows) or 1
+    methods = [
+        {"method": row["method"], "total": row["total"], "percent": round((row["total"] / total_methods) * 100)}
+        for row in method_rows
+    ]
+    return {"daily_points": points, "method_split": methods}
 
 
 def wa_link(phone, message):
@@ -2482,6 +2541,8 @@ def payments():
         due_count=due_count,
         reminder_days=PAYMENT_REMINDER_DAYS,
         renewals=renewal_rows,
+        finance=finance_stats(),
+        charts=finance_chart_data(),
     )
 
 
@@ -2490,6 +2551,53 @@ def payments():
 def run_payment_reminders():
     result = queue_payment_due_reminders()
     return redirect(url_for("payments", created=result["created"], scanned=result["scanned"]))
+
+
+@app.route("/payments/batch-action", methods=["POST"])
+@role_required("admin", "owner", "accountant")
+def payment_batch_action():
+    action = request.form.get("action")
+    payment_ids = request.form.getlist("payment_ids")
+    notification_ids = request.form.getlist("notification_ids")
+    changed = 0
+
+    if action == "queue_reminders":
+        for payment_id in payment_ids:
+            payment = query_one(
+                """
+                SELECT payments.*, members.name AS member_name
+                FROM payments JOIN members ON members.id = payments.member_id
+                WHERE payments.id = ?
+                """,
+                (payment_id,),
+            )
+            if payment:
+                days_left = days_until(payment["due_on"])
+                message = payment_due_message(
+                    payment["member_name"],
+                    payment["net_amount"] or payment["amount"],
+                    payment["due_on"],
+                    days_left,
+                )
+                event_key = f"manual-payment:{payment['id']}:{date.today().isoformat()}"
+                if log_notification(payment["member_id"], message, event_key=event_key):
+                    changed += 1
+        for notification_id in notification_ids:
+            execute("UPDATE notifications SET status = 'Queued' WHERE id = ?", (notification_id,))
+            changed += 1
+
+    if action == "mark_paid":
+        for payment_id in payment_ids:
+            payment = query_one("SELECT * FROM payments WHERE id = ?", (payment_id,))
+            if payment and payment["status"] != "Received":
+                execute(
+                    "UPDATE payments SET status = 'Received', paid_on = COALESCE(paid_on, ?), payment_method = COALESCE(payment_method, 'Cash') WHERE id = ?",
+                    (date.today().isoformat(), payment_id),
+                )
+                execute("UPDATE members SET payment_status = 'Paid' WHERE id = ?", (payment["member_id"],))
+                changed += 1
+
+    return redirect(url_for("payments", batch=changed, action=action or "none"))
 
 
 @app.route("/payments/<int:payment_id>/receipt.pdf")
