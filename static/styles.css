@@ -145,6 +145,43 @@ h2 { font-size: 20px; }
 .today-card p { color: #d6e7e0; line-height: 1.55; }
 .accent-card { border-color: rgba(52,211,153,.5); }
 .workout-card { grid-column: span 2; border-color: rgba(215,255,63,.45); }
+.compact-title { margin-bottom: 12px; }
+.compact-title span {
+  display: block;
+  color: var(--accent-strong);
+  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: .08em;
+}
+.compact-title strong { color: var(--hot); font-size: 24px; }
+.workout-checklist { display: grid; gap: 10px; }
+.checklist-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(6,17,14,.55);
+  color: #d6e7e0;
+}
+.checklist-row input { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--hot); }
+.history-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
+.history-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--panel-2);
+}
+.history-card span { color: var(--muted); font-size: 12px; font-weight: 800; }
+.history-card strong { display: block; color: var(--hot); font-size: 28px; margin: 6px 0; }
+.history-card p { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
 .stat, .panel, .card, .table-wrap {
   background: var(--panel);
   border: 1px solid var(--line);

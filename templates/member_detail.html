@@ -47,8 +47,23 @@
     <ul>{% for item in today_plan.warmup %}<li>{{ item }}</li>{% endfor %}</ul>
   </article>
   <article class="today-card workout-card">
-    <span>Workout</span>
-    <ul>{% for item in today_plan.workout_items %}<li>{{ item }}</li>{% endfor %}</ul>
+    <div class="section-title compact-title">
+      <span>Workout checklist</span>
+      <strong>{{ today_checkin.completion_percent if today_checkin else 0 }}%</strong>
+    </div>
+    <form class="workout-checklist" method="post" action="{{ url_for('save_workout_checkin', member_id=member.id) }}">
+      {% for item in today_plan.workout_items %}
+      <label class="checklist-row">
+        <input type="checkbox" name="completed_items" value="{{ item }}" {% if item in today_completed_items %}checked{% endif %}>
+        <span>{{ item }}</span>
+      </label>
+      {% endfor %}
+      <textarea name="notes" rows="2" placeholder="Optional notes: energy, pain, weights used">{{ today_checkin.notes if today_checkin else '' }}</textarea>
+      {% if current_user.role in ["admin", "trainer"] %}
+      <label class="check"><input type="checkbox" name="send_workout_update"> Queue WhatsApp update</label>
+      {% endif %}
+      <button class="button primary" type="submit">Save today</button>
+    </form>
   </article>
   <article class="today-card">
     <span>Stretching</span>
@@ -58,6 +73,22 @@
     <span>Cardio</span>
     <p>{{ today_plan.cardio }}</p>
   </article>
+</section>
+
+<section class="panel">
+  <div class="section-title"><h2>Workout completion history</h2></div>
+  <div class="history-strip">
+    {% for row in workout_history %}
+    <article class="history-card">
+      <span>{{ row.checkin_date }}</span>
+      <strong>{{ row.completion_percent }}%</strong>
+      <small>{{ row.focus }}</small>
+      {% if row.notes %}<p>{{ row.notes }}</p>{% endif %}
+    </article>
+    {% else %}
+    <p class="empty">No workout check-ins yet.</p>
+    {% endfor %}
+  </div>
 </section>
 
 <section class="stats-grid">

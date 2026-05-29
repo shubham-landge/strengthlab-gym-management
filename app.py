@@ -763,6 +763,20 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(member_id) REFERENCES members(id)
         );
+
+        CREATE TABLE IF NOT EXISTS workout_checkins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            member_id INTEGER NOT NULL,
+            checkin_date TEXT NOT NULL,
+            focus TEXT,
+            completed_items TEXT,
+            completion_percent INTEGER DEFAULT 0,
+            notes TEXT,
+            created_by INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(member_id) REFERENCES members(id),
+            FOREIGN KEY(created_by) REFERENCES users(id)
+        );
         """
     )
 
@@ -1360,6 +1374,13 @@ def personalized_today_plan(member):
     }
 
 
+def today_checkin(member_id):
+    return query_one(
+        "SELECT * FROM workout_checkins WHERE member_id = ? AND checkin_date = ? ORDER BY id DESC LIMIT 1",
+        (member_id, date.today().isoformat()),
+    )
+
+
 def payment_due_message(member_name, amount, due_on, days_left):
     amount_text = f"Rs {amount:.2f}" if amount is not None else "your gym fee"
     if days_left is None:
@@ -1954,6 +1975,16 @@ def member_detail(member_id):
         "SELECT * FROM progress_entries WHERE member_id = ? ORDER BY entry_date DESC, id DESC LIMIT 12",
         (member_id,),
     )
+    checkin = today_checkin(member_id)
+    workout_history = query_all(
+        """
+        SELECT workout_checkins.*, users.username AS created_by_name
+        FROM workout_checkins LEFT JOIN users ON users.id = workout_checkins.created_by
+        WHERE workout_checkins.member_id = ?
+        ORDER BY workout_checkins.checkin_date DESC, workout_checkins.id DESC LIMIT 10
+        """,
+        (member_id,),
+    )
     return render_template(
         "member_detail.html",
         member=member,
@@ -1964,12 +1995,62 @@ def member_detail(member_id):
         progress_summary=progress_summary(progress_entries),
         workout_templates=PREBUILT_WORKOUT_PLANS,
         today_plan=personalized_today_plan(member),
+        today_checkin=checkin,
+        today_completed_items=unpack_choices(checkin["completed_items"]) if checkin else [],
+        workout_history=workout_history,
         profile_options=MEMBER_PROFILE_OPTIONS,
         selected_food_exclusions=unpack_choices(member["food_exclusions"]),
         selected_medical_conditions=unpack_choices(member["medical_conditions"]),
         selected_supplements=unpack_choices(member["supplements"]),
         bmi=bmi(member["height_cm"], member["weight_kg"]),
     )
+
+
+@app.route("/members/<int:member_id>/workout-checkin", methods=["POST"])
+@login_required
+def save_workout_checkin(member_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    user = current_user()
+    if not can_view_member(user, member):
+        return redirect(url_for("index"))
+
+    today_plan = personalized_today_plan(member)
+    completed_items = request.form.getlist("completed_items")
+    total_items = len(today_plan["workout_items"]) or 1
+    completion_percent = round((len(completed_items) / total_items) * 100)
+    existing = today_checkin(member_id)
+    payload = (
+        today_plan["focus"],
+        pack_choices(completed_items),
+        completion_percent,
+        request.form.get("notes"),
+        user["id"],
+    )
+    if existing:
+        execute(
+            """
+            UPDATE workout_checkins
+            SET focus = ?, completed_items = ?, completion_percent = ?, notes = ?, created_by = ?
+            WHERE id = ?
+            """,
+            payload + (existing["id"],),
+        )
+    else:
+        execute(
+            """
+            INSERT INTO workout_checkins
+            (member_id, checkin_date, focus, completed_items, completion_percent, notes, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (member_id, date.today().isoformat()) + payload,
+        )
+
+    if user["role"] in {"admin", "trainer"} and request.form.get("send_workout_update"):
+        log_notification(
+            member_id,
+            f"Workout update for {member['name']}: {completion_percent}% completed for {today_plan['focus']}.",
+        )
+    return redirect(url_for("member_detail", member_id=member_id))
 
 
 @app.route("/members/<int:member_id>/profile-questionnaire", methods=["POST"])
