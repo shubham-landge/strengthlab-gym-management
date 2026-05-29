@@ -9,6 +9,7 @@ import threading
 import textwrap
 import time
 from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 from flask import Flask, g, redirect, render_template, request, send_file, session, url_for
 from reportlab.lib.pagesizes import A4
@@ -23,6 +24,7 @@ DB_PATH = os.path.join(BASE_DIR, "gym_manager.db")
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "local-gym-secret")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.2")
+DEFAULT_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 PAYMENT_REMINDER_DAYS = int(os.environ.get("PAYMENT_REMINDER_DAYS", "3"))
 PAYMENT_REMINDER_INTERVAL_SECONDS = int(os.environ.get("PAYMENT_REMINDER_INTERVAL_SECONDS", "3600"))
 _payment_automation_started = False
@@ -1060,6 +1062,62 @@ def unpack_choices(value):
     return [item for item in value.split("|") if item]
 
 
+def split_env_values(*names, default=None):
+    values = []
+    for name in names:
+        raw_value = os.environ.get(name, "")
+        for item in raw_value.replace("\n", ",").replace(";", ",").split(","):
+            item = item.strip()
+            if item:
+                values.append(item)
+    if not values and default:
+        values = [default]
+    return values
+
+
+def configured_ai_providers():
+    preferred = split_env_values("AI_PROVIDER_ORDER", default="openai,gemini")
+    providers = []
+    for provider in preferred:
+        provider_key = provider.lower()
+        if provider_key == "openai":
+            keys = split_env_values("OPENAI_API_KEYS", "OPENAI_API_KEY")
+            models = split_env_values("OPENAI_MODELS", "OPENAI_MODEL", default=OPENAI_MODEL)
+        elif provider_key == "gemini":
+            keys = split_env_values("GEMINI_API_KEYS", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+            models = split_env_values("GEMINI_MODELS", "GEMINI_MODEL", default=DEFAULT_GEMINI_MODEL)
+        else:
+            continue
+        if keys:
+            providers.append({"name": provider_key, "keys": keys, "models": models})
+    return providers
+
+
+def ai_generation_enabled():
+    return bool(configured_ai_providers())
+
+
+def ai_generation_label():
+    providers = configured_ai_providers()
+    if not providers:
+        return "local fallback"
+    parts = []
+    for provider in providers:
+        model_label = ", ".join(provider["models"])
+        key_label = "key" if len(provider["keys"]) == 1 else "keys"
+        parts.append(f"{provider['name'].title()} ({len(provider['keys'])} {key_label}: {model_label})")
+    return " -> ".join(parts)
+
+
+def parse_ai_json(text):
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`").strip()
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].strip()
+    return json.loads(cleaned)
+
+
 def generate_rule_based_plans(member):
     member_bmi = bmi(member["height_cm"], member["weight_kg"])
     goal = (member["goal"] or "general fitness").lower()
@@ -1151,55 +1209,132 @@ def member_ai_payload(member):
     }
 
 
-def generate_ai_plans(member):
-    if not os.environ.get("OPENAI_API_KEY"):
+def ai_plan_prompt(member):
+    return {
+        "task": "Create a safe, practical gym workout plan and diet plan for this member.",
+        "member": member_ai_payload(member),
+        "requirements": [
+            "Return only valid JSON with keys workout_plan, diet_plan, progress_message, safety_notes.",
+            "Workout plan should be 5-6 clear training days with sets/reps/intensity and trainer-friendly notes.",
+            "Diet plan should match food preference, Indian/local meal patterns when appropriate, hydration, and premium add-ons if premium is true.",
+            "Respect medical and injury notes. Do not diagnose, treat disease, or override medical advice.",
+            "Use concise plain text strings. No Markdown tables.",
+        ],
+    }
+
+
+def validate_ai_plan_data(data):
+    workout_plan = data.get("workout_plan", "").strip()
+    diet_plan = data.get("diet_plan", "").strip()
+    safety_notes = data.get("safety_notes", "").strip()
+    progress_message = data.get("progress_message", "").strip()
+    if not workout_plan or not diet_plan:
         return None
+    if safety_notes:
+        workout_plan = f"{workout_plan}\n\nSafety notes: {safety_notes}"
+        diet_plan = f"{diet_plan}\n\nSafety notes: {safety_notes}"
+    if progress_message:
+        workout_plan = f"{workout_plan}\n\nProgress message: {progress_message}"
+    return workout_plan, diet_plan
 
-    try:
-        from openai import OpenAI
 
-        client = OpenAI()
-        prompt = {
-            "task": "Create a safe, practical gym workout plan and diet plan for this member.",
-            "member": member_ai_payload(member),
-            "requirements": [
-                "Return only valid JSON with keys workout_plan, diet_plan, progress_message, safety_notes.",
-                "Workout plan should be 5-6 clear training days with sets/reps/intensity and trainer-friendly notes.",
-                "Diet plan should match food preference, Indian/local meal patterns when appropriate, hydration, and premium add-ons if premium is true.",
-                "Respect medical and injury notes. Do not diagnose, treat disease, or override medical advice.",
-                "Use concise plain text strings. No Markdown tables.",
-            ],
-        }
-        response = client.responses.create(
-            model=OPENAI_MODEL,
-            input=[
+def generate_openai_plans(member, api_key, model):
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key)
+    response = client.responses.create(
+        model=model,
+        input=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a certified gym programming assistant for a gym management app. "
+                    "Create fitness and nutrition guidance that is conservative, practical, and safe. "
+                    "Advise professional medical clearance when health risks are present."
+                ),
+            },
+            {"role": "user", "content": json.dumps(ai_plan_prompt(member))},
+        ],
+    )
+    return validate_ai_plan_data(parse_ai_json(response.output_text))
+
+
+def generate_gemini_plans(member, api_key, model):
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    payload = {
+        "systemInstruction": {
+            "parts": [
                 {
-                    "role": "system",
-                    "content": (
+                    "text": (
                         "You are a certified gym programming assistant for a gym management app. "
-                        "Create fitness and nutrition guidance that is conservative, practical, and safe. "
-                        "Advise professional medical clearance when health risks are present."
-                    ),
-                },
-                {"role": "user", "content": json.dumps(prompt)},
-            ],
-        )
-        data = json.loads(response.output_text)
-        workout_plan = data.get("workout_plan", "").strip()
-        diet_plan = data.get("diet_plan", "").strip()
-        safety_notes = data.get("safety_notes", "").strip()
-        progress_message = data.get("progress_message", "").strip()
-        if not workout_plan or not diet_plan:
-            return None
-        if safety_notes:
-            workout_plan = f"{workout_plan}\n\nSafety notes: {safety_notes}"
-            diet_plan = f"{diet_plan}\n\nSafety notes: {safety_notes}"
-        if progress_message:
-            workout_plan = f"{workout_plan}\n\nProgress message: {progress_message}"
-        return workout_plan, diet_plan
-    except Exception as error:
-        app.logger.warning("AI plan generation failed; using fallback. Error: %s", error)
+                        "Create conservative, practical, safe fitness and nutrition guidance. "
+                        "Return only valid JSON."
+                    )
+                }
+            ]
+        },
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": json.dumps(ai_plan_prompt(member))}],
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.35,
+        },
+    }
+    request_data = json.dumps(payload).encode("utf-8")
+    gemini_request = Request(
+        endpoint,
+        data=request_data,
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+        method="POST",
+    )
+    with urlopen(gemini_request, timeout=45) as response:
+        raw_response = json.loads(response.read().decode("utf-8"))
+    text = (
+        raw_response.get("candidates", [{}])[0]
+        .get("content", {})
+        .get("parts", [{}])[0]
+        .get("text", "")
+    )
+    return validate_ai_plan_data(parse_ai_json(text))
+
+
+def generate_ai_plans(member):
+    providers = configured_ai_providers()
+    if not providers:
         return None
+
+    for provider in providers:
+        for model in provider["models"]:
+            for key_index, api_key in enumerate(provider["keys"], start=1):
+                try:
+                    if provider["name"] == "openai":
+                        result = generate_openai_plans(member, api_key, model)
+                    elif provider["name"] == "gemini":
+                        result = generate_gemini_plans(member, api_key, model)
+                    else:
+                        result = None
+                    if result:
+                        app.logger.info(
+                            "AI plan generated with %s model %s key #%s",
+                            provider["name"],
+                            model,
+                            key_index,
+                        )
+                        return result
+                except Exception as error:
+                    app.logger.warning(
+                        "AI provider failed: %s model %s key #%s. Error: %s",
+                        provider["name"],
+                        model,
+                        key_index,
+                        error,
+                    )
+    app.logger.warning("All AI providers failed; using local fallback plan generator.")
+    return None
 
 
 def generate_plans(member, prefer_ai=True):
@@ -1892,7 +2027,8 @@ def inject_helpers():
         "wa_link": wa_link,
         "today": date.today,
         "current_user": current_user(),
-        "ai_enabled": bool(os.environ.get("OPENAI_API_KEY")),
+        "ai_enabled": ai_generation_enabled(),
+        "ai_model_summary": ai_generation_label(),
         "openai_model": OPENAI_MODEL,
     }
 

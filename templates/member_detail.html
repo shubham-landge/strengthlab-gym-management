@@ -335,7 +335,7 @@
     </div>
     {% if current_user.role in ["admin", "trainer"] %}
     <div class="notice {{ 'good' if ai_enabled else 'warn' }}">
-      {% if ai_enabled %}AI plan generation enabled with {{ openai_model }}.{% else %}Set OPENAI_API_KEY to enable AI plan generation.{% endif %}
+      {% if ai_enabled %}AI plan generation enabled: {{ ai_model_summary }}.{% else %}Set OPENAI_API_KEY or GEMINI_API_KEY to enable AI plan generation.{% endif %}
     </div>
     {% endif %}
     {% if current_user.role in ["admin", "member"] %}

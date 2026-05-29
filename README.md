@@ -69,14 +69,29 @@ $env:PAYMENT_REMINDER_INTERVAL_SECONDS="3600"
 python app.py
 ```
 
-## OpenAI Plan Generation
+## AI Plan Generation
 
-The app can generate workout and diet plans with the OpenAI API. Set your API key before starting the server:
+The app can generate workout and diet plans with multiple AI providers. It tries providers, models, and keys in order. If one key is rate-limited or fails, the next key/model is used automatically. If all AI providers fail, the built-in local plan generator is used.
 
 ```powershell
-$env:OPENAI_API_KEY="your_api_key_here"
-$env:OPENAI_MODEL="gpt-5.2"
+$env:AI_PROVIDER_ORDER="openai,gemini"
+
+# Single key or comma-separated multiple keys
+$env:OPENAI_API_KEYS="openai_key_1,openai_key_2"
+$env:OPENAI_MODELS="gpt-5.2,gpt-4o-mini"
+
+# Gemini keys can use the Google AI Studio free tier where available
+$env:GEMINI_API_KEYS="gemini_key_1,gemini_key_2"
+$env:GEMINI_MODELS="gemini-2.5-flash,gemini-2.0-flash"
+
 python app.py
 ```
 
-If `OPENAI_API_KEY` is not set, the app automatically uses the built-in local plan generator.
+Backward-compatible single-key settings also work:
+
+```powershell
+$env:OPENAI_API_KEY="your_openai_key"
+$env:OPENAI_MODEL="gpt-5.2"
+$env:GEMINI_API_KEY="your_gemini_key"
+$env:GEMINI_MODEL="gemini-2.5-flash"
+```

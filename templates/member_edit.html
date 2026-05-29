@@ -86,9 +86,9 @@
     <div class="section-title"><h2>Workout and diet plans</h2></div>
     <div class="notice {{ 'good' if ai_enabled else 'warn' }}">
       {% if ai_enabled %}
-      AI generation is enabled with {{ openai_model }}. Regeneration will use OpenAI first, then fall back locally if needed.
+      AI generation is enabled: {{ ai_model_summary }}. Regeneration will try each configured provider, model, and key before falling back locally.
       {% else %}
-      AI generation is not configured. Add OPENAI_API_KEY to use OpenAI; regeneration will use the local fallback until then.
+      AI generation is not configured. Add OPENAI_API_KEY or GEMINI_API_KEY; regeneration will use the local fallback until then.
       {% endif %}
     </div>
     <div class="two-col edit-plans">
