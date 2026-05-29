@@ -23,7 +23,8 @@
     <input name="emergency_contact" placeholder="Emergency contact">
     <select name="plan_name"><option>Monthly</option><option>Quarterly</option><option>Annual</option></select>
     <select name="trainer_id"><option value="">Assign trainer</option>{% for trainer in trainers %}<option value="{{ trainer.id }}">{{ trainer.name }}</option>{% endfor %}</select>
-    <label class="check"><input type="checkbox" name="premium"> Premium diet and review</label>
+    <select name="workout_subscription"><option>Regular</option><option>Premium</option></select>
+    <select name="diet_subscription"><option>None</option><option>Regular</option><option>Premium</option></select>
     <button class="button primary" type="submit">Create member</button>
   </form>
 </section>
@@ -31,14 +32,15 @@
 
 <section class="table-wrap">
   <table>
-    <thead><tr><th>Name</th><th>Phone</th><th>Goal</th><th>Plan</th><th>Trainer</th><th></th></tr></thead>
+    <thead><tr><th>Name</th><th>Phone</th><th>Goal</th><th>Plan</th><th>Services</th><th>Trainer</th><th></th></tr></thead>
     <tbody>
       {% for member in members %}
       <tr>
         <td><a href="{{ url_for('member_detail', member_id=member.id) }}">{{ member.name }}</a></td>
         <td>{{ member.phone }}</td>
         <td>{{ member.goal or "General" }}</td>
-        <td>{{ member.plan_name }}{% if member.premium %} · Premium{% endif %}</td>
+        <td>{{ member.plan_name }}</td>
+        <td>Workout: {{ member.workout_subscription or "Regular" }}<br>Diet: {{ member.diet_subscription or "None" }}</td>
         <td>{{ member.trainer_name or "Unassigned" }}</td>
         <td class="actions-cell">
           {% if current_user.role == "admin" %}

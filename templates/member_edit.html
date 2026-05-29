@@ -78,7 +78,23 @@
       </label>
       <label>Start date<input name="subscription_start" type="date" value="{{ member.subscription_start }}"></label>
       <label>End date<input name="subscription_end" type="date" value="{{ member.subscription_end }}"></label>
-      <label class="check field-check"><input type="checkbox" name="premium" {% if member.premium %}checked{% endif %}> Premium diet and review</label>
+    </div>
+    <div class="service-grid">
+      <div class="form-block">
+        <h3>Workout service</h3>
+        <div class="choice-grid compact-choice">
+          <label class="radio-card"><input type="radio" name="workout_subscription" value="Regular" {% if (member.workout_subscription or "Regular") == "Regular" %}checked{% endif %}> Regular built-in plan</label>
+          <label class="radio-card"><input type="radio" name="workout_subscription" value="Premium" {% if member.workout_subscription == "Premium" or member.premium %}checked{% endif %}> Premium AI-assisted plan</label>
+        </div>
+      </div>
+      <div class="form-block">
+        <h3>Diet service</h3>
+        <div class="choice-grid compact-choice">
+          <label class="radio-card"><input type="radio" name="diet_subscription" value="None" {% if (member.diet_subscription or "None") == "None" and not member.premium %}checked{% endif %}> No diet plan</label>
+          <label class="radio-card"><input type="radio" name="diet_subscription" value="Regular" {% if member.diet_subscription == "Regular" %}checked{% endif %}> Regular built-in diet</label>
+          <label class="radio-card"><input type="radio" name="diet_subscription" value="Premium" {% if member.diet_subscription == "Premium" or member.premium %}checked{% endif %}> Premium AI diet</label>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -91,12 +107,49 @@
       AI generation is not configured. Add OPENAI_API_KEY or GEMINI_API_KEY; regeneration will use the local fallback until then.
       {% endif %}
     </div>
+    <div class="form-block">
+      <h3>Clickable plan customizations</h3>
+      <div class="checkbox-grid">
+        {% for option in [
+          "Use available StrengthLab equipment only",
+          "Beginner friendly progression",
+          "Fat-loss conditioning focus",
+          "Muscle-gain hypertrophy focus",
+          "Low-impact joint friendly plan",
+          "Add treadmill or cycle cardio",
+          "Include warm-up and stretching",
+          "Prefer Indian local food options",
+          "High-protein vegetarian options",
+          "No supplements unless selected"
+        ] %}
+        <label class="check"><input type="checkbox" name="customizations" value="{{ option }}" {% if selected_customizations and option in selected_customizations %}checked{% endif %}> {{ option }}</label>
+        {% endfor %}
+      </div>
+      <div class="plan-draft-actions">
+        <button class="button" formaction="{{ url_for('generate_member_plan_draft', member_id=member.id) }}" name="plan_type" value="workout" formmethod="post">Generate workout draft</button>
+        <button class="button" formaction="{{ url_for('generate_member_plan_draft', member_id=member.id) }}" name="plan_type" value="diet" formmethod="post">Generate diet draft</button>
+      </div>
+    </div>
+    {% if draft_workout_plan or draft_diet_plan %}
+    <div class="plan-draft-review">
+      {% if draft_workout_plan %}
+      <div class="notice good">Workout draft generated. Review it, customize if needed, then copy it into the final workout plan before saving.</div>
+      <label>Workout draft<textarea id="workout-draft" rows="12" readonly>{{ draft_workout_plan }}</textarea></label>
+      <button class="button" type="button" data-copy-plan="workout">Use workout draft</button>
+      {% endif %}
+      {% if draft_diet_plan %}
+      <div class="notice good">Diet draft generated. Review it, customize if needed, then copy it into the final diet plan before saving.</div>
+      <label>Diet draft<textarea id="diet-draft" rows="12" readonly>{{ draft_diet_plan }}</textarea></label>
+      <button class="button" type="button" data-copy-plan="diet">Use diet draft</button>
+      {% endif %}
+    </div>
+    {% endif %}
     <div class="two-col edit-plans">
-      <label>Workout plan<textarea name="workout_plan" rows="14">{{ member.workout_plan or '' }}</textarea></label>
-      <label>Diet plan<textarea name="diet_plan" rows="14">{{ member.diet_plan or '' }}</textarea></label>
+      <label>Final workout plan<textarea id="workout-plan" name="workout_plan" rows="14">{{ member.workout_plan or '' }}</textarea></label>
+      <label>Final diet plan<textarea id="diet-plan" name="diet_plan" rows="14">{{ member.diet_plan or '' }}</textarea></label>
     </div>
     <div class="form-options">
-      <label class="check"><input type="checkbox" name="regenerate_plans"> Regenerate plans from updated health data</label>
+      <label class="check"><input type="checkbox" name="regenerate_plans"> Regenerate final plans using subscription rules on save</label>
       <label class="check"><input type="checkbox" name="send_profile_update"> Queue WhatsApp profile update</label>
     </div>
   </section>
@@ -125,4 +178,14 @@
     <a class="button" href="{{ url_for('member_detail', member_id=member.id) }}">Cancel</a>
   </div>
 </form>
+<script>
+  document.querySelectorAll("[data-copy-plan]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const type = button.dataset.copyPlan;
+      const source = document.getElementById(`${type}-draft`);
+      const target = document.getElementById(`${type}-plan`);
+      if (source && target) target.value = source.value;
+    });
+  });
+</script>
 {% endblock %}

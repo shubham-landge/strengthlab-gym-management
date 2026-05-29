@@ -73,6 +73,16 @@ python app.py
 
 The app can generate workout and diet plans with multiple AI providers. It tries providers, models, and keys in order. If one key is rate-limited or fails, the next key/model is used automatically. If all AI providers fail, the built-in local plan generator is used.
 
+Workout and diet services are controlled separately per member:
+
+- Workout Regular: built-in local plan generator.
+- Workout Premium: admin-only AI-assisted workout draft, with local fallback.
+- Diet None: no diet plan service.
+- Diet Regular: built-in local diet generator.
+- Diet Premium: admin-only AI-assisted diet draft, with local fallback.
+
+Admins generate drafts from the member edit screen, choose clickable customization options, review the draft, then copy it into the final saved plan.
+
 ```powershell
 $env:AI_PROVIDER_ORDER="openai,gemini"
 

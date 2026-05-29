@@ -676,6 +676,8 @@ def init_db():
             injury_notes TEXT,
             plan_name TEXT DEFAULT 'Monthly',
             premium INTEGER DEFAULT 0,
+            workout_subscription TEXT DEFAULT 'Regular',
+            diet_subscription TEXT DEFAULT 'None',
             trainer_id INTEGER,
             subscription_start TEXT,
             subscription_end TEXT,
@@ -871,10 +873,16 @@ def init_db():
         "cooking_preference": "TEXT",
         "medical_conditions": "TEXT",
         "supplements": "TEXT",
+        "workout_subscription": "TEXT DEFAULT 'Regular'",
+        "diet_subscription": "TEXT DEFAULT 'None'",
     }
     for column, column_type in extra_member_columns.items():
         if column not in member_columns:
             cursor.execute(f"ALTER TABLE members ADD COLUMN {column} {column_type}")
+    cursor.execute("UPDATE members SET workout_subscription = 'Regular' WHERE workout_subscription IS NULL")
+    cursor.execute("UPDATE members SET diet_subscription = 'None' WHERE diet_subscription IS NULL")
+    cursor.execute("UPDATE members SET workout_subscription = 'Premium' WHERE premium = 1 AND workout_subscription = 'Regular'")
+    cursor.execute("UPDATE members SET diet_subscription = 'Premium' WHERE premium = 1 AND diet_subscription = 'None'")
 
     notification_columns = {row[1] for row in cursor.execute("PRAGMA table_info(notifications)").fetchall()}
     if "event_key" not in notification_columns:
@@ -1181,6 +1189,38 @@ def generate_rule_based_plans(member):
     return workout_plan, diet_plan
 
 
+def apply_customization_notes(plan_text, customizations):
+    customizations = [item for item in (customizations or []) if item]
+    if not customizations:
+        return plan_text
+    return f"{plan_text}\n\nAdmin customization notes:\n" + "\n".join(f"- {item}" for item in customizations)
+
+
+def service_level(member, field_name, default="Regular"):
+    value = (member[field_name] if member and field_name in member.keys() else None) or default
+    return value
+
+
+def generate_plan_draft(member, plan_type, customizations=None):
+    workout_subscription = service_level(member, "workout_subscription", "Regular")
+    diet_subscription = service_level(member, "diet_subscription", "None")
+    use_ai = (plan_type == "workout" and workout_subscription == "Premium") or (
+        plan_type == "diet" and diet_subscription == "Premium"
+    )
+    if plan_type == "diet" and diet_subscription == "None":
+        return "No diet plan subscription is active for this member."
+
+    if use_ai:
+        ai_plans = generate_ai_plans(member, customizations=customizations, plan_type=plan_type)
+        if ai_plans:
+            return ai_plans[0] if plan_type == "workout" else ai_plans[1]
+
+    local_workout, local_diet = generate_rule_based_plans(member)
+    draft = local_workout if plan_type == "workout" else local_diet
+    equipment_note = "Equipment basis: " + ", ".join(equipment_names())
+    return apply_customization_notes(f"{draft}\n\n{equipment_note}", customizations)
+
+
 def member_ai_payload(member):
     return {
         "name": member["name"],
@@ -1206,16 +1246,27 @@ def member_ai_payload(member):
         "injury_notes": member["injury_notes"],
         "membership_plan": member["plan_name"],
         "premium": bool(member["premium"]),
+        "workout_subscription": member["workout_subscription"] or "Regular",
+        "diet_subscription": member["diet_subscription"] or "None",
     }
 
 
-def ai_plan_prompt(member):
+def equipment_names():
+    rows = query_all("SELECT name FROM equipment ORDER BY name")
+    return [row["name"] for row in rows] or [name for name, *_rest in PREBUILT_EQUIPMENT]
+
+
+def ai_plan_prompt(member, customizations=None, plan_type="both"):
     return {
         "task": "Create a safe, practical gym workout plan and diet plan for this member.",
+        "requested_plan_type": plan_type,
         "member": member_ai_payload(member),
+        "available_gym_equipment": equipment_names(),
+        "admin_customizations": customizations or [],
         "requirements": [
             "Return only valid JSON with keys workout_plan, diet_plan, progress_message, safety_notes.",
             "Workout plan should be 5-6 clear training days with sets/reps/intensity and trainer-friendly notes.",
+            "Workout exercises must be selected from the available gym equipment whenever possible.",
             "Diet plan should match food preference, Indian/local meal patterns when appropriate, hydration, and premium add-ons if premium is true.",
             "Respect medical and injury notes. Do not diagnose, treat disease, or override medical advice.",
             "Use concise plain text strings. No Markdown tables.",
@@ -1238,7 +1289,7 @@ def validate_ai_plan_data(data):
     return workout_plan, diet_plan
 
 
-def generate_openai_plans(member, api_key, model):
+def generate_openai_plans(member, api_key, model, customizations=None, plan_type="both"):
     from openai import OpenAI
 
     client = OpenAI(api_key=api_key)
@@ -1253,13 +1304,13 @@ def generate_openai_plans(member, api_key, model):
                     "Advise professional medical clearance when health risks are present."
                 ),
             },
-            {"role": "user", "content": json.dumps(ai_plan_prompt(member))},
+            {"role": "user", "content": json.dumps(ai_plan_prompt(member, customizations, plan_type))},
         ],
     )
     return validate_ai_plan_data(parse_ai_json(response.output_text))
 
 
-def generate_gemini_plans(member, api_key, model):
+def generate_gemini_plans(member, api_key, model, customizations=None, plan_type="both"):
     endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     payload = {
         "systemInstruction": {
@@ -1276,7 +1327,7 @@ def generate_gemini_plans(member, api_key, model):
         "contents": [
             {
                 "role": "user",
-                "parts": [{"text": json.dumps(ai_plan_prompt(member))}],
+                "parts": [{"text": json.dumps(ai_plan_prompt(member, customizations, plan_type))}],
             }
         ],
         "generationConfig": {
@@ -1302,7 +1353,7 @@ def generate_gemini_plans(member, api_key, model):
     return validate_ai_plan_data(parse_ai_json(text))
 
 
-def generate_ai_plans(member):
+def generate_ai_plans(member, customizations=None, plan_type="both"):
     providers = configured_ai_providers()
     if not providers:
         return None
@@ -1312,9 +1363,9 @@ def generate_ai_plans(member):
             for key_index, api_key in enumerate(provider["keys"], start=1):
                 try:
                     if provider["name"] == "openai":
-                        result = generate_openai_plans(member, api_key, model)
+                        result = generate_openai_plans(member, api_key, model, customizations, plan_type)
                     elif provider["name"] == "gemini":
-                        result = generate_gemini_plans(member, api_key, model)
+                        result = generate_gemini_plans(member, api_key, model, customizations, plan_type)
                     else:
                         result = None
                     if result:
@@ -1338,11 +1389,16 @@ def generate_ai_plans(member):
 
 
 def generate_plans(member, prefer_ai=True):
-    if prefer_ai:
-        ai_plans = generate_ai_plans(member)
-        if ai_plans:
-            return ai_plans
-    return generate_rule_based_plans(member)
+    workout_subscription = service_level(member, "workout_subscription", "Premium" if member["premium"] else "Regular")
+    diet_subscription = service_level(member, "diet_subscription", "Premium" if member["premium"] else "Regular")
+    workout = generate_plan_draft(member, "workout") if prefer_ai else generate_rule_based_plans(member)[0]
+    diet = "No diet plan subscription is active for this member."
+    if diet_subscription != "None":
+        diet = generate_plan_draft(member, "diet") if prefer_ai else generate_rule_based_plans(member)[1]
+    if workout_subscription != "Premium" and diet_subscription != "Premium":
+        local_workout, local_diet = generate_rule_based_plans(member)
+        return local_workout, local_diet if diet_subscription != "None" else diet
+    return workout, diet
 
 
 def dashboard_stats():
@@ -2268,14 +2324,16 @@ def members():
 def add_member():
     subscription_start = request.form.get("subscription_start") or str(date.today())
     subscription_end = request.form.get("subscription_end") or str(date.today() + timedelta(days=30))
-    premium = 1 if request.form.get("premium") else 0
+    workout_subscription = request.form.get("workout_subscription", "Regular")
+    diet_subscription = request.form.get("diet_subscription", "None")
+    premium = 1 if workout_subscription == "Premium" or diet_subscription == "Premium" else 0
     cursor = db().execute(
         """
         INSERT INTO members
         (name, phone, email, address, emergency_contact, age, gender, height_cm, weight_kg,
          goal, fitness_level, food_preference, medical_notes, injury_notes,
-         plan_name, premium, trainer_id, subscription_start, subscription_end, payment_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         plan_name, premium, workout_subscription, diet_subscription, trainer_id, subscription_start, subscription_end, payment_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             request.form["name"],
@@ -2294,6 +2352,8 @@ def add_member():
             request.form.get("injury_notes"),
             request.form.get("plan_name", "Monthly"),
             premium,
+            workout_subscription,
+            diet_subscription,
             request.form.get("trainer_id") or None,
             subscription_start,
             subscription_end,
@@ -2717,11 +2777,11 @@ def add_progress(member_id):
 
 
 @app.route("/members/<int:member_id>/plans", methods=["POST"])
-@login_required
+@role_required("admin")
 def update_member_plans(member_id):
     member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
     user = current_user()
-    if not can_view_member(user, member) or user["role"] not in {"admin", "member"}:
+    if not can_view_member(user, member):
         return redirect(url_for("index"))
 
     workout_plan = request.form.get("workout_plan", "").strip()
@@ -2731,20 +2791,15 @@ def update_member_plans(member_id):
         (workout_plan, diet_plan, member_id),
     )
 
-    if user["role"] == "member":
-        log_notification(
-            member_id,
-            f"{member['name']} updated their workout or diet plan from the member dashboard.",
-        )
     return redirect(url_for("member_detail", member_id=member_id))
 
 
 @app.route("/members/<int:member_id>/plans/apply-template", methods=["POST"])
-@login_required
+@role_required("admin")
 def apply_workout_template(member_id):
     member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
     user = current_user()
-    if not can_view_member(user, member) or user["role"] not in {"admin", "member"}:
+    if not can_view_member(user, member):
         return redirect(url_for("index"))
 
     template_key = request.form.get("template_key")
@@ -2761,6 +2816,27 @@ def apply_workout_template(member_id):
         f"{template['name']} was applied to {member['name']}'s workout plan.",
     )
     return redirect(url_for("member_detail", member_id=member_id))
+
+
+@app.route("/members/<int:member_id>/plan-draft", methods=["POST"])
+@role_required("admin")
+def generate_member_plan_draft(member_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member:
+        return redirect(url_for("members"))
+    plan_type = request.form.get("plan_type", "workout")
+    customizations = request.form.getlist("customizations")
+    draft = generate_plan_draft(member, plan_type, customizations)
+    return render_template(
+        "member_edit.html",
+        member=member,
+        trainers=query_all("SELECT * FROM trainers WHERE active = 1 ORDER BY name"),
+        member_login=get_member_login(member_id),
+        default_password=default_mobile_password(member["phone"]),
+        draft_workout_plan=draft if plan_type == "workout" else None,
+        draft_diet_plan=draft if plan_type == "diet" else None,
+        selected_customizations=customizations,
+    )
 
 
 @app.route("/members/<int:member_id>/progress/<int:progress_id>/delete", methods=["POST"])
@@ -2780,14 +2856,16 @@ def edit_member(member_id):
     trainers = query_all("SELECT * FROM trainers WHERE active = 1 ORDER BY name")
     member_login = get_member_login(member_id)
     if request.method == "POST":
-        premium = 1 if request.form.get("premium") else 0
+        workout_subscription = request.form.get("workout_subscription", "Regular")
+        diet_subscription = request.form.get("diet_subscription", "None")
+        premium = 1 if workout_subscription == "Premium" or diet_subscription == "Premium" else 0
         execute(
             """
             UPDATE members
             SET name = ?, phone = ?, email = ?, address = ?, emergency_contact = ?,
                 age = ?, gender = ?, height_cm = ?, weight_kg = ?,
                 goal = ?, fitness_level = ?, food_preference = ?, medical_notes = ?, injury_notes = ?,
-                plan_name = ?, premium = ?, trainer_id = ?,
+                plan_name = ?, premium = ?, workout_subscription = ?, diet_subscription = ?, trainer_id = ?,
                 subscription_start = ?, subscription_end = ?, payment_status = ?,
                 workout_plan = ?, diet_plan = ?
             WHERE id = ?
@@ -2809,6 +2887,8 @@ def edit_member(member_id):
                 request.form.get("injury_notes"),
                 request.form.get("plan_name", "Monthly"),
                 premium,
+                workout_subscription,
+                diet_subscription,
                 request.form.get("trainer_id") or None,
                 request.form.get("subscription_start"),
                 request.form.get("subscription_end"),
@@ -2849,7 +2929,7 @@ def edit_member(member_id):
 
 
 @app.route("/members/<int:member_id>/regenerate", methods=["POST"])
-@role_required("admin", "trainer")
+@role_required("admin")
 def regenerate(member_id):
     member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
     if not can_view_member(current_user(), member):

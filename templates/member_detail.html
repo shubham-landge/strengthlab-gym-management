@@ -94,6 +94,8 @@
 <section class="stats-grid">
   <div class="stat"><span>Membership</span><strong>{{ member.plan_name }}</strong></div>
   <div class="stat"><span>Payment</span><strong>{{ member.payment_status }}</strong></div>
+  <div class="stat"><span>Workout service</span><strong>{{ member.workout_subscription or "Regular" }}</strong></div>
+  <div class="stat"><span>Diet service</span><strong>{{ member.diet_subscription or "None" }}</strong></div>
   <div class="stat"><span>BMI</span><strong>{{ bmi or "N/A" }}</strong></div>
   <div class="stat"><span>Trainer</span><strong>{{ member.trainer_name or "Unassigned" }}</strong></div>
 </section>
@@ -329,16 +331,16 @@
 <section class="two-col">
   <article class="panel">
     <div class="section-title"><h2>Workout routine</h2>
-      {% if current_user.role in ["admin", "trainer"] %}
+      {% if current_user.role == "admin" %}
       <form method="post" action="{{ url_for('regenerate', member_id=member.id) }}"><button class="link-button">Regenerate</button></form>
       {% endif %}
     </div>
-    {% if current_user.role in ["admin", "trainer"] %}
+    {% if current_user.role == "admin" %}
     <div class="notice {{ 'good' if ai_enabled else 'warn' }}">
       {% if ai_enabled %}AI plan generation enabled: {{ ai_model_summary }}.{% else %}Set OPENAI_API_KEY or GEMINI_API_KEY to enable AI plan generation.{% endif %}
     </div>
     {% endif %}
-    {% if current_user.role in ["admin", "member"] %}
+    {% if current_user.role == "admin" %}
     <form class="template-picker" method="post" action="{{ url_for('apply_workout_template', member_id=member.id) }}">
       <label>Apply prebuilt workout template
         <select name="template_key" required>
@@ -361,8 +363,8 @@
   </article>
   <article class="panel">
     <h2>Diet plan</h2>
-    {% if current_user.role in ["admin", "member"] %}
-    <div class="notice good">Use the plan editor on the left to add or update workout and diet details.</div>
+    {% if current_user.role == "admin" %}
+    <div class="notice good">Use the plan editor on the left to add or update workout and diet details. AI generation is admin-only.</div>
     {% else %}
     <pre>{{ member.diet_plan or "No diet plan generated yet." }}</pre>
     {% endif %}
