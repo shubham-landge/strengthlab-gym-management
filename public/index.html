@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Daily Work Console</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="header">
+        <div>
+          <p class="eyebrow">Local workspace</p>
+          <h1>Daily Work Console</h1>
+        </div>
+        <div class="status">localhost:3000</div>
+      </section>
+
+      <section class="grid" aria-label="Daily inputs">
+        <label>
+          Emails
+          <textarea placeholder="Paste important emails or inbox snippets here"></textarea>
+        </label>
+        <label>
+          Teams
+          <textarea placeholder="Paste Teams activity, chats, or channel updates here"></textarea>
+        </label>
+        <label>
+          Calendar
+          <textarea placeholder="Paste today's meetings and event details here"></textarea>
+        </label>
+        <label>
+          Planner
+          <textarea placeholder="Paste assigned tasks, due dates, and blockers here"></textarea>
+        </label>
+      </section>
+
+      <section class="actions">
+        <button id="buildPlan" type="button">Build prompt</button>
+        <button id="clearAll" type="button">Clear</button>
+      </section>
+
+      <section class="output" aria-live="polite">
+        <h2>Prompt for Codex</h2>
+        <pre id="promptOutput">Add your daily inputs, then build a prompt.</pre>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
