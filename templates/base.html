@@ -25,6 +25,7 @@
       {% endif %}
       {% if current_user.role in ["admin", "owner", "trainer"] %}
       <a href="{{ url_for('members') }}">Members</a>
+      <a href="{{ url_for('trainer_assignments') }}">Assignments</a>
       <a href="{{ url_for('attendance') }}">Attendance</a>
       {% endif %}
       {% if current_user.role in ["admin", "owner", "accountant"] %}

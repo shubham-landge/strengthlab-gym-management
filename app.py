@@ -803,6 +803,23 @@ def init_db():
             FOREIGN KEY(member_id) REFERENCES members(id),
             FOREIGN KEY(created_by) REFERENCES users(id)
         );
+
+        CREATE TABLE IF NOT EXISTS trainer_assignment_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            member_id INTEGER NOT NULL,
+            trainer_id INTEGER NOT NULL,
+            requested_by INTEGER,
+            status TEXT DEFAULT 'Pending',
+            request_note TEXT,
+            decision_note TEXT,
+            decided_by INTEGER,
+            decided_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(member_id) REFERENCES members(id),
+            FOREIGN KEY(trainer_id) REFERENCES trainers(id),
+            FOREIGN KEY(requested_by) REFERENCES users(id),
+            FOREIGN KEY(decided_by) REFERENCES users(id)
+        );
         """
     )
 
@@ -2161,6 +2178,205 @@ def add_member():
     )
     create_member_user(member["id"], member["phone"])
     return redirect(url_for("member_detail", member_id=member["id"]))
+
+
+@app.route("/trainer-assignments")
+@role_required("admin", "owner", "trainer")
+def trainer_assignments():
+    user = current_user()
+    pending_requests = query_all(
+        """
+        SELECT trainer_assignment_requests.*, members.name AS member_name,
+               members.phone AS member_phone, members.plan_name, members.primary_fitness_goal,
+               trainers.name AS trainer_name, users.username AS requested_by_name
+        FROM trainer_assignment_requests
+        JOIN members ON members.id = trainer_assignment_requests.member_id
+        JOIN trainers ON trainers.id = trainer_assignment_requests.trainer_id
+        LEFT JOIN users ON users.id = trainer_assignment_requests.requested_by
+        WHERE trainer_assignment_requests.status = 'Pending'
+        ORDER BY trainer_assignment_requests.created_at DESC
+        """
+    )
+    recent_requests = query_all(
+        """
+        SELECT trainer_assignment_requests.*, members.name AS member_name,
+               trainers.name AS trainer_name, decider.username AS decided_by_name
+        FROM trainer_assignment_requests
+        JOIN members ON members.id = trainer_assignment_requests.member_id
+        JOIN trainers ON trainers.id = trainer_assignment_requests.trainer_id
+        LEFT JOIN users AS decider ON decider.id = trainer_assignment_requests.decided_by
+        WHERE trainer_assignment_requests.status != 'Pending'
+        ORDER BY trainer_assignment_requests.id DESC LIMIT 12
+        """
+    )
+
+    unassigned_members = query_all(
+        """
+        SELECT members.*
+        FROM members
+        WHERE members.trainer_id IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM trainer_assignment_requests
+              WHERE trainer_assignment_requests.member_id = members.id
+                AND trainer_assignment_requests.status = 'Pending'
+          )
+        ORDER BY members.name
+        """
+    )
+    active_trainers = query_all("SELECT * FROM trainers WHERE active = 1 ORDER BY name")
+    my_members = []
+    my_pending_requests = []
+    if user["role"] == "trainer":
+        my_members = query_all(
+            "SELECT * FROM members WHERE trainer_id = ? ORDER BY name",
+            (user["trainer_id"],),
+        )
+        my_pending_requests = query_all(
+            """
+            SELECT trainer_assignment_requests.*, members.name AS member_name,
+                   members.phone AS member_phone, members.plan_name
+            FROM trainer_assignment_requests
+            JOIN members ON members.id = trainer_assignment_requests.member_id
+            WHERE trainer_assignment_requests.trainer_id = ?
+              AND trainer_assignment_requests.status = 'Pending'
+            ORDER BY trainer_assignment_requests.created_at DESC
+            """,
+            (user["trainer_id"],),
+        )
+    return render_template(
+        "trainer_assignments.html",
+        pending_requests=pending_requests,
+        recent_requests=recent_requests,
+        unassigned_members=unassigned_members,
+        active_trainers=active_trainers,
+        my_members=my_members,
+        my_pending_requests=my_pending_requests,
+    )
+
+
+@app.route("/trainer-assignments/request", methods=["POST"])
+@role_required("trainer")
+def request_trainer_assignment():
+    user = current_user()
+    trainer = query_one("SELECT * FROM trainers WHERE id = ? AND active = 1", (user["trainer_id"],))
+    if not trainer:
+        return redirect(url_for("trainer_assignments", error="trainer"))
+    member_id = request.form["member_id"]
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member or member["trainer_id"] is not None:
+        return redirect(url_for("trainer_assignments", error="assigned"))
+    existing = query_one(
+        "SELECT id FROM trainer_assignment_requests WHERE member_id = ? AND status = 'Pending'",
+        (member_id,),
+    )
+    if existing:
+        return redirect(url_for("trainer_assignments", error="pending"))
+    execute(
+        """
+        INSERT INTO trainer_assignment_requests
+        (member_id, trainer_id, requested_by, request_note)
+        VALUES (?, ?, ?, ?)
+        """,
+        (member_id, user["trainer_id"], user["id"], request.form.get("request_note")),
+    )
+    return redirect(url_for("trainer_assignments", requested=1))
+
+
+@app.route("/trainer-assignments/direct", methods=["POST"])
+@role_required("admin", "owner")
+def direct_trainer_assignment():
+    member_id = request.form["member_id"]
+    trainer_id = request.form["trainer_id"]
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    trainer = query_one("SELECT * FROM trainers WHERE id = ? AND active = 1", (trainer_id,))
+    existing = query_one(
+        "SELECT id FROM trainer_assignment_requests WHERE member_id = ? AND status = 'Pending'",
+        (member_id,),
+    )
+    if not member or not trainer or member["trainer_id"] is not None or existing:
+        return redirect(url_for("trainer_assignments", error="direct"))
+    cursor = db().execute(
+        """
+        INSERT INTO trainer_assignment_requests
+        (member_id, trainer_id, requested_by, status, request_note, decision_note, decided_by, decided_at)
+        VALUES (?, ?, ?, 'Approved', ?, ?, ?, ?)
+        """,
+        (
+            member_id,
+            trainer_id,
+            current_user()["id"],
+            "Direct admin assignment",
+            request.form.get("decision_note"),
+            current_user()["id"],
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+    db().commit()
+    execute("UPDATE members SET trainer_id = ? WHERE id = ?", (trainer_id, member_id))
+    log_notification(member_id, f"Your trainer has been assigned: {trainer['name']}.")
+    return redirect(url_for("trainer_assignments", approved=cursor.lastrowid))
+
+
+@app.route("/trainer-assignments/<int:request_id>/approve", methods=["POST"])
+@role_required("admin", "owner")
+def approve_trainer_assignment(request_id):
+    assignment = query_one("SELECT * FROM trainer_assignment_requests WHERE id = ?", (request_id,))
+    if not assignment or assignment["status"] != "Pending":
+        return redirect(url_for("trainer_assignments"))
+    member = query_one("SELECT * FROM members WHERE id = ?", (assignment["member_id"],))
+    trainer = query_one("SELECT * FROM trainers WHERE id = ? AND active = 1", (assignment["trainer_id"],))
+    if not member or not trainer or member["trainer_id"] is not None:
+        execute(
+            """
+            UPDATE trainer_assignment_requests
+            SET status = 'Rejected', decision_note = ?, decided_by = ?, decided_at = ?
+            WHERE id = ?
+            """,
+            (
+                "Member is no longer unassigned.",
+                current_user()["id"],
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                request_id,
+            ),
+        )
+        return redirect(url_for("trainer_assignments", error="assigned"))
+    execute("UPDATE members SET trainer_id = ? WHERE id = ?", (assignment["trainer_id"], assignment["member_id"]))
+    execute(
+        """
+        UPDATE trainer_assignment_requests
+        SET status = 'Approved', decision_note = ?, decided_by = ?, decided_at = ?
+        WHERE id = ?
+        """,
+        (
+            request.form.get("decision_note"),
+            current_user()["id"],
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            request_id,
+        ),
+    )
+    log_notification(assignment["member_id"], f"Your trainer has been assigned: {trainer['name']}.")
+    return redirect(url_for("trainer_assignments", approved=request_id))
+
+
+@app.route("/trainer-assignments/<int:request_id>/reject", methods=["POST"])
+@role_required("admin", "owner")
+def reject_trainer_assignment(request_id):
+    assignment = query_one("SELECT * FROM trainer_assignment_requests WHERE id = ?", (request_id,))
+    if assignment and assignment["status"] == "Pending":
+        execute(
+            """
+            UPDATE trainer_assignment_requests
+            SET status = 'Rejected', decision_note = ?, decided_by = ?, decided_at = ?
+            WHERE id = ?
+            """,
+            (
+                request.form.get("decision_note"),
+                current_user()["id"],
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                request_id,
+            ),
+        )
+    return redirect(url_for("trainer_assignments", rejected=request_id))
 
 
 @app.route("/members/<int:member_id>")

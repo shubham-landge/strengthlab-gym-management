@@ -336,6 +336,32 @@ label input, label select, label textarea { margin-top: 6px; color: var(--ink); 
 }
 .profile-readonly span { display: block; color: var(--muted); font-size: 12px; font-weight: 800; margin-bottom: 6px; }
 .readonly-lists p { margin-bottom: 8px; color: var(--muted); }
+.assignment-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+.assignment-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--panel-2);
+}
+.assignment-card strong, .assignment-card span { display: block; color: var(--ink); }
+.assignment-card small { display: block; color: var(--muted); margin: 5px 0; }
+.assignment-card form, .decision-actions {
+  display: grid;
+  gap: 8px;
+}
+.decision-actions {
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+}
+.decision-actions form {
+  display: grid;
+  gap: 8px;
+}
 .readonly-field {
   min-height: 66px;
   border: 1px solid var(--line);
@@ -484,6 +510,7 @@ pre {
   .workout-card { grid-column: span 1; }
   .template-picker { grid-template-columns: 1fr; }
   .choice-grid, .checkbox-grid { grid-template-columns: 1fr; }
+  .decision-actions { grid-template-columns: 1fr; }
   .span-3 { grid-column: span 1; }
   .sticky-actions { justify-content: stretch; }
   .sticky-actions .button, .sticky-actions button { flex: 1; text-align: center; }

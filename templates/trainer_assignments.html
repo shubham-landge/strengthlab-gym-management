@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div><p class="eyebrow">Coaching operations</p><h1>Trainer assignments</h1></div>
+  <div class="actions">
+    <a class="button" href="{{ url_for('members') }}">Members</a>
+    {% if current_user.role in ["admin", "owner"] %}
+    <a class="button" href="{{ url_for('trainers') }}">Trainers</a>
+    {% endif %}
+  </div>
+</header>
+
+{% if request.args.get("requested") %}
+<div class="notice good">Assignment request sent for admin approval.</div>
+{% endif %}
+{% if request.args.get("approved") %}
+<div class="notice good">Trainer assignment approved.</div>
+{% endif %}
+{% if request.args.get("rejected") %}
+<div class="notice warn">Trainer assignment rejected.</div>
+{% endif %}
+{% if request.args.get("error") %}
+<div class="notice warn">This member already has an assignment in progress or is no longer unassigned.</div>
+{% endif %}
+
+{% if current_user.role == "trainer" %}
+<section class="stats-grid">
+  <div class="stat"><span>My members</span><strong>{{ my_members|length }}</strong></div>
+  <div class="stat"><span>Pending claims</span><strong>{{ my_pending_requests|length }}</strong></div>
+  <div class="stat"><span>Open members</span><strong>{{ unassigned_members|length }}</strong></div>
+</section>
+
+<section class="panel">
+  <div class="section-title"><h2>Claim unassigned members</h2><small>Requests need admin or owner approval.</small></div>
+  <div class="assignment-grid">
+    {% for member in unassigned_members %}
+    <article class="assignment-card">
+      <div>
+        <strong>{{ member.name }}</strong>
+        <small>{{ member.phone }} · {{ member.plan_name or "Plan not set" }}</small>
+        <span>{{ member.primary_fitness_goal or member.goal or "General fitness" }}</span>
+      </div>
+      <form method="post" action="{{ url_for('request_trainer_assignment') }}">
+        <input type="hidden" name="member_id" value="{{ member.id }}">
+        <input name="request_note" placeholder="Why this member fits your coaching">
+        <button class="button primary" type="submit">Request assignment</button>
+      </form>
+    </article>
+    {% else %}
+    <p class="empty">No unassigned members available right now.</p>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="two-col">
+  <article class="panel">
+    <div class="section-title"><h2>My pending requests</h2></div>
+    {% for request_row in my_pending_requests %}
+    <div class="item-row">
+      <span>{{ request_row.member_name }}</span>
+      <small>{{ request_row.created_at }} · {{ request_row.request_note or "No note" }}</small>
+    </div>
+    {% else %}
+    <p class="empty">No pending requests.</p>
+    {% endfor %}
+  </article>
+  <article class="panel">
+    <div class="section-title"><h2>My assigned members</h2></div>
+    {% for member in my_members %}
+    <div class="item-row">
+      <span>{{ member.name }}</span>
+      <small>{{ member.phone }} · {{ member.plan_name or "Plan not set" }}</small>
+    </div>
+    {% else %}
+    <p class="empty">No members assigned yet.</p>
+    {% endfor %}
+  </article>
+</section>
+{% endif %}
+
+{% if current_user.role in ["admin", "owner"] %}
+<section class="panel">
+  <div class="section-title"><h2>Direct assign unassigned member</h2><small>Use when no approval delay is needed.</small></div>
+  <form class="grid-form compact" method="post" action="{{ url_for('direct_trainer_assignment') }}">
+    <select name="member_id" required>
+      <option value="">Choose member</option>
+      {% for member in unassigned_members %}
+      <option value="{{ member.id }}">{{ member.name }} · {{ member.phone }}</option>
+      {% endfor %}
+    </select>
+    <select name="trainer_id" required>
+      <option value="">Choose trainer</option>
+      {% for trainer in active_trainers %}
+      <option value="{{ trainer.id }}">{{ trainer.name }}</option>
+      {% endfor %}
+    </select>
+    <input name="decision_note" placeholder="Optional admin note">
+    <button class="button primary" type="submit">Assign now</button>
+  </form>
+</section>
+
+<section class="table-wrap">
+  <div class="section-title table-title"><h2>Approval queue</h2><small>{{ pending_requests|length }} pending</small></div>
+  <table>
+    <thead><tr><th>Member</th><th>Trainer</th><th>Requested by</th><th>Note</th><th>Requested</th><th>Decision</th></tr></thead>
+    <tbody>
+      {% for request_row in pending_requests %}
+      <tr>
+        <td><strong>{{ request_row.member_name }}</strong><br><small>{{ request_row.member_phone }} · {{ request_row.plan_name }}</small></td>
+        <td>{{ request_row.trainer_name }}</td>
+        <td>{{ request_row.requested_by_name or "System" }}</td>
+        <td>{{ request_row.request_note or "-" }}</td>
+        <td>{{ request_row.created_at }}</td>
+        <td>
+          <div class="decision-actions">
+            <form method="post" action="{{ url_for('approve_trainer_assignment', request_id=request_row.id) }}">
+              <input name="decision_note" placeholder="Approval note">
+              <button class="button primary" type="submit">Approve</button>
+            </form>
+            <form method="post" action="{{ url_for('reject_trainer_assignment', request_id=request_row.id) }}">
+              <input name="decision_note" placeholder="Reason">
+              <button class="button" type="submit">Reject</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No pending trainer assignment requests.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <div class="section-title"><h2>Recent assignment decisions</h2></div>
+  <div class="history-strip">
+    {% for request_row in recent_requests %}
+    <article class="history-card">
+      <span>{{ request_row.status }}</span>
+      <strong>{{ request_row.member_name }}</strong>
+      <small>{{ request_row.trainer_name }} · {{ request_row.decided_at or request_row.created_at }}</small>
+      {% if request_row.decision_note %}<p>{{ request_row.decision_note }}</p>{% endif %}
+    </article>
+    {% else %}
+    <p class="empty">No assignment decisions yet.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}
