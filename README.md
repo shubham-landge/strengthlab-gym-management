@@ -32,6 +32,8 @@ Open `http://localhost:5000` on the host machine.
 
 Admins can manage the full system. Trainers can view their assigned members and attendance. Members are redirected to their own dashboard.
 
+Default mobile passwords must be changed on first login. Admin password resets also force the user to choose a new password on next login. A local forgot-password reset link flow is available from the login page.
+
 If `python` opens the Microsoft Store instead of running Python, install Python from
 python.org or create the venv with an existing interpreter path. On this machine,
 this worked:

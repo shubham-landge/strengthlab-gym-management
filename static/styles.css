@@ -396,6 +396,7 @@ pre {
   background: #111;
 }
 .login-form { display: grid; gap: 12px; }
+.secondary-form { margin-top: 12px; }
 .error {
   color: #991b1b;
   background: #fee2e2;

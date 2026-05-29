@@ -3,6 +3,7 @@ from functools import wraps
 from io import BytesIO
 import json
 import os
+import secrets
 import sqlite3
 import threading
 import textwrap
@@ -739,6 +740,9 @@ def init_db():
             member_id INTEGER,
             trainer_id INTEGER,
             active INTEGER DEFAULT 1,
+            must_change_password INTEGER DEFAULT 0,
+            reset_token TEXT,
+            reset_token_created_at TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(member_id) REFERENCES members(id),
             FOREIGN KEY(trainer_id) REFERENCES trainers(id)
@@ -777,6 +781,9 @@ def init_db():
                 member_id INTEGER,
                 trainer_id INTEGER,
                 active INTEGER DEFAULT 1,
+                must_change_password INTEGER DEFAULT 0,
+                reset_token TEXT,
+                reset_token_created_at TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(member_id) REFERENCES members(id),
                 FOREIGN KEY(trainer_id) REFERENCES trainers(id)
@@ -817,6 +824,14 @@ def init_db():
     payment_columns = {row[1] for row in cursor.execute("PRAGMA table_info(payments)").fetchall()}
     if "payment_method" not in payment_columns:
         cursor.execute("ALTER TABLE payments ADD COLUMN payment_method TEXT")
+
+    user_columns = {row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()}
+    if "must_change_password" not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0")
+    if "reset_token" not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN reset_token TEXT")
+    if "reset_token_created_at" not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN reset_token_created_at TEXT")
 
     progress_count = cursor.execute("SELECT COUNT(*) FROM progress_entries").fetchone()[0]
     if progress_count == 0:
@@ -1509,6 +1524,18 @@ def role_required(*roles):
     return decorator
 
 
+def password_change_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        user = current_user()
+        allowed_endpoints = {"change_password", "logout", "static"}
+        if user and user["must_change_password"] and request.endpoint not in allowed_endpoints:
+            return redirect(url_for("change_password"))
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
 def can_view_member(user, member):
     if not user or not member:
         return False
@@ -1552,7 +1579,7 @@ def create_or_update_mobile_user(role, phone, member_id=None, trainer_id=None, r
             execute("DELETE FROM users WHERE id = ?", (existing["id"],))
         if reset_password:
             execute(
-                "UPDATE users SET password_hash = ? WHERE id = ?",
+                "UPDATE users SET password_hash = ?, must_change_password = 1, reset_token = NULL, reset_token_created_at = NULL WHERE id = ?",
                 (generate_password_hash(password), username_owner["id"]),
             )
         return username
@@ -1563,11 +1590,14 @@ def create_or_update_mobile_user(role, phone, member_id=None, trainer_id=None, r
             (username, member_id, trainer_id, existing["id"]),
         )
         if reset_password:
-            execute("UPDATE users SET password_hash = ? WHERE id = ?", (generate_password_hash(password), existing["id"]))
+            execute(
+                "UPDATE users SET password_hash = ?, must_change_password = 1, reset_token = NULL, reset_token_created_at = NULL WHERE id = ?",
+                (generate_password_hash(password), existing["id"]),
+            )
         return username
 
     execute(
-        "INSERT INTO users (username, password_hash, role, member_id, trainer_id) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO users (username, password_hash, role, member_id, trainer_id, must_change_password) VALUES (?, ?, ?, ?, ?, 1)",
         (username, generate_password_hash(password), role, member_id, trainer_id),
     )
     return username
@@ -1595,6 +1625,17 @@ def get_trainer_login(trainer_id):
     )
 
 
+@app.before_request
+def enforce_password_change():
+    public_endpoints = {"login", "forgot_password", "reset_password", "static"}
+    if request.endpoint in public_endpoints or request.endpoint is None:
+        return None
+    user = current_user()
+    if user and user["must_change_password"] and request.endpoint not in {"change_password", "logout"}:
+        return redirect(url_for("change_password"))
+    return None
+
+
 @app.context_processor
 def inject_helpers():
     return {
@@ -1620,9 +1661,76 @@ def login():
         if user and check_password_hash(user["password_hash"], request.form["password"]):
             session.clear()
             session["user_id"] = user["id"]
+            if user["must_change_password"]:
+                return redirect(url_for("change_password"))
             return redirect(url_for("index"))
         error = "Invalid username or password."
     return render_template("login.html", error=error)
+
+
+@app.route("/change-password", methods=["GET", "POST"])
+@login_required
+def change_password():
+    user = current_user()
+    error = None
+    if request.method == "POST":
+        current_password = request.form.get("current_password", "")
+        new_password = request.form.get("new_password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        if not check_password_hash(user["password_hash"], current_password):
+            error = "Current password is incorrect."
+        elif len(new_password) < 8:
+            error = "New password must be at least 8 characters."
+        elif new_password != confirm_password:
+            error = "New passwords do not match."
+        else:
+            execute(
+                "UPDATE users SET password_hash = ?, must_change_password = 0, reset_token = NULL, reset_token_created_at = NULL WHERE id = ?",
+                (generate_password_hash(new_password), user["id"]),
+            )
+            return redirect(url_for("index"))
+    return render_template("change_password.html", error=error, user=user)
+
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+    reset_link = None
+    error = None
+    if request.method == "POST":
+        username = mobile_login_id(request.form.get("username", "")) or request.form.get("username", "").strip()
+        user = query_one("SELECT * FROM users WHERE username = ? AND active = 1", (username,))
+        if user:
+            token = secrets.token_urlsafe(24)
+            execute(
+                "UPDATE users SET reset_token = ?, reset_token_created_at = ? WHERE id = ?",
+                (token, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user["id"]),
+            )
+            reset_link = url_for("reset_password", token=token, _external=True)
+        else:
+            error = "No active account found for that login ID."
+    return render_template("forgot_password.html", reset_link=reset_link, error=error)
+
+
+@app.route("/reset-password/<token>", methods=["GET", "POST"])
+def reset_password(token):
+    user = query_one("SELECT * FROM users WHERE reset_token = ? AND active = 1", (token,))
+    error = None
+    if not user:
+        return render_template("reset_password.html", error="Invalid or expired reset link.", token=token)
+    if request.method == "POST":
+        new_password = request.form.get("new_password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        if len(new_password) < 8:
+            error = "New password must be at least 8 characters."
+        elif new_password != confirm_password:
+            error = "New passwords do not match."
+        else:
+            execute(
+                "UPDATE users SET password_hash = ?, must_change_password = 0, reset_token = NULL, reset_token_created_at = NULL WHERE id = ?",
+                (generate_password_hash(new_password), user["id"]),
+            )
+            return redirect(url_for("login"))
+    return render_template("reset_password.html", error=error, token=token, user=user)
 
 
 @app.route("/logout", methods=["POST"])
@@ -2053,7 +2161,7 @@ def edit_member(member_id):
         new_password = request.form.get("new_password", "").strip()
         if new_password:
             execute(
-                "UPDATE users SET password_hash = ? WHERE role = 'member' AND member_id = ?",
+                "UPDATE users SET password_hash = ?, must_change_password = 1, reset_token = NULL, reset_token_created_at = NULL WHERE role = 'member' AND member_id = ?",
                 (generate_password_hash(new_password), member_id),
             )
             log_notification(member_id, f"Hi {member['name']}, your member portal password was updated.")
