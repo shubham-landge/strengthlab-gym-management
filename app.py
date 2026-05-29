@@ -28,6 +28,12 @@ PAYMENT_REMINDER_INTERVAL_SECONDS = int(os.environ.get("PAYMENT_REMINDER_INTERVA
 _payment_automation_started = False
 _payment_automation_lock = threading.Lock()
 
+MEMBERSHIP_PLANS = [
+    {"name": "Monthly", "days": 30, "amount": 2000},
+    {"name": "Quarterly", "days": 90, "amount": 5500},
+    {"name": "Annual", "days": 365, "amount": 20000},
+]
+
 
 PREBUILT_EQUIPMENT = [
     ("Lat Pulldown", "Back", 1, "Good", 60),
@@ -1246,11 +1252,114 @@ def next_invoice_number():
     return f"SL-{year}-{count + 1:05d}"
 
 
+def plan_settings(plan_name):
+    for plan in MEMBERSHIP_PLANS:
+        if plan["name"] == plan_name:
+            return plan
+    return MEMBERSHIP_PLANS[0]
+
+
+def renewal_defaults(member):
+    current_end = None
+    if member and member["subscription_end"]:
+        try:
+            current_end = datetime.strptime(member["subscription_end"], "%Y-%m-%d").date()
+        except ValueError:
+            current_end = None
+    start = max(current_end + timedelta(days=1), date.today()) if current_end else date.today()
+    plan = plan_settings(member["plan_name"] if member else "Monthly")
+    return {
+        "start": start.isoformat(),
+        "end": (start + timedelta(days=plan["days"] - 1)).isoformat(),
+        "amount": plan["amount"],
+    }
+
+
 def money_value(value):
     try:
         return round(float(value or 0), 2)
     except (TypeError, ValueError):
         return 0.0
+
+
+def create_membership_renewal(member, form, send_whatsapp=True):
+    plan_name = form.get("plan_name") or member["plan_name"] or "Monthly"
+    amount = money_value(form.get("amount"))
+    if amount <= 0:
+        amount = money_value(plan_settings(plan_name)["amount"])
+    discount_amount = money_value(form.get("discount_amount"))
+    net_amount = max(amount - discount_amount, 0)
+    payment_method = form.get("payment_method") or "Cash"
+    renewal_start = form.get("renewal_start") or date.today().isoformat()
+    renewal_end = form.get("renewal_end")
+    if not renewal_end:
+        renewal_end = (
+            datetime.strptime(renewal_start, "%Y-%m-%d").date()
+            + timedelta(days=plan_settings(plan_name)["days"] - 1)
+        ).isoformat()
+    invoice_number = next_invoice_number()
+    cursor = db().execute(
+        """
+        INSERT INTO payments
+        (member_id, invoice_number, amount, discount_amount, net_amount, status, payment_method,
+         upi_transaction_id, paid_on, due_on, notes)
+        VALUES (?, ?, ?, ?, ?, 'Received', ?, ?, ?, ?, ?)
+        """,
+        (
+            member["id"],
+            invoice_number,
+            amount,
+            discount_amount,
+            net_amount,
+            payment_method,
+            form.get("upi_transaction_id"),
+            date.today().isoformat(),
+            renewal_end,
+            form.get("notes") or f"{plan_name} membership renewal",
+        ),
+    )
+    db().commit()
+    payment_id = cursor.lastrowid
+    execute(
+        """
+        UPDATE members
+        SET subscription_start = ?, subscription_end = ?, plan_name = ?, payment_status = 'Paid'
+        WHERE id = ?
+        """,
+        (renewal_start, renewal_end, plan_name, member["id"]),
+    )
+    execute(
+        """
+        INSERT INTO renewal_history
+        (member_id, payment_id, plan_name, renewal_start, renewal_end, amount, discount_amount, payment_method)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            member["id"],
+            payment_id,
+            plan_name,
+            renewal_start,
+            renewal_end,
+            net_amount,
+            discount_amount,
+            payment_method,
+        ),
+    )
+    if send_whatsapp:
+        message = (
+            f"Payment received. Thank you {member['name']}! Invoice {invoice_number}, "
+            f"amount Rs {net_amount}. {plan_name} membership renewed till {renewal_end}. "
+            "Receipt PDF is ready from StrengthLab."
+        )
+        log_notification(member["id"], message, f"receipt-{invoice_number}.pdf", event_key=f"renewal:{payment_id}")
+    return {
+        "payment_id": payment_id,
+        "invoice_number": invoice_number,
+        "amount": amount,
+        "discount_amount": discount_amount,
+        "net_amount": net_amount,
+        "renewal_end": renewal_end,
+    }
 
 
 def finance_chart_data():
@@ -1663,7 +1772,7 @@ def password_change_required(view):
 def can_view_member(user, member):
     if not user or not member:
         return False
-    if user["role"] in {"admin", "owner"}:
+    if user["role"] in {"admin", "owner", "accountant"}:
         return True
     if user["role"] == "member":
         return user["member_id"] == member["id"]
@@ -2101,11 +2210,34 @@ def member_detail(member_id):
         today_checkin=checkin,
         today_completed_items=unpack_choices(checkin["completed_items"]) if checkin else [],
         workout_history=workout_history,
+        membership_plans=MEMBERSHIP_PLANS,
+        renewal_defaults=renewal_defaults(member),
         profile_options=MEMBER_PROFILE_OPTIONS,
         selected_food_exclusions=unpack_choices(member["food_exclusions"]),
         selected_medical_conditions=unpack_choices(member["medical_conditions"]),
         selected_supplements=unpack_choices(member["supplements"]),
         bmi=bmi(member["height_cm"], member["weight_kg"]),
+    )
+
+
+@app.route("/members/<int:member_id>/renew", methods=["POST"])
+@role_required("admin", "owner", "accountant")
+def renew_member(member_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+    result = create_membership_renewal(
+        member,
+        request.form,
+        send_whatsapp=bool(request.form.get("send_whatsapp_receipt")),
+    )
+    return redirect(
+        url_for(
+            "member_detail",
+            member_id=member_id,
+            renewed=result["invoice_number"],
+            payment_id=result["payment_id"],
+        )
     )
 
 

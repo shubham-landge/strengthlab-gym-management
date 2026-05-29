@@ -287,6 +287,17 @@ label input, label select, label textarea { margin-top: 6px; color: var(--ink); 
   align-items: end;
   margin-bottom: 12px;
 }
+.renewal-panel {
+  border-color: rgba(230, 39, 39, .42);
+  box-shadow: 0 0 30px rgba(230, 39, 39, .12);
+}
+.renewal-form {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: end;
+}
+.renewal-form .button {
+  min-height: 43px;
+}
 .questionnaire-form { display: grid; gap: 18px; }
 .form-block {
   border: 1px solid var(--line);
@@ -469,7 +480,7 @@ pre {
   nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .main { padding: 20px; }
   .page-header, .two-col { grid-template-columns: 1fr; display: grid; }
-  .stats-grid, .grid-form, .grid-form.compact, .member-hero, .today-grid, .finance-visuals { grid-template-columns: 1fr; }
+  .stats-grid, .grid-form, .grid-form.compact, .renewal-form, .member-hero, .today-grid, .finance-visuals { grid-template-columns: 1fr; }
   .workout-card { grid-column: span 1; }
   .template-picker { grid-template-columns: 1fr; }
   .choice-grid, .checkbox-grid { grid-template-columns: 1fr; }
