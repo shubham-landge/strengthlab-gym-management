@@ -13,6 +13,7 @@ from urllib.parse import quote
 from flask import Flask, g, redirect, render_template, request, send_file, session, url_for
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+from openpyxl import Workbook
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
@@ -704,13 +705,32 @@ def init_db():
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             member_id INTEGER NOT NULL,
+            invoice_number TEXT,
             amount REAL NOT NULL,
+            discount_amount REAL DEFAULT 0,
+            net_amount REAL,
             status TEXT NOT NULL,
             payment_method TEXT,
+            upi_transaction_id TEXT,
             paid_on TEXT,
             due_on TEXT,
             notes TEXT,
             FOREIGN KEY(member_id) REFERENCES members(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS renewal_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            member_id INTEGER NOT NULL,
+            payment_id INTEGER,
+            plan_name TEXT,
+            renewal_start TEXT,
+            renewal_end TEXT,
+            amount REAL,
+            discount_amount REAL DEFAULT 0,
+            payment_method TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(member_id) REFERENCES members(id),
+            FOREIGN KEY(payment_id) REFERENCES payments(id)
         );
 
         CREATE TABLE IF NOT EXISTS announcements (
@@ -836,8 +856,16 @@ def init_db():
         cursor.execute("ALTER TABLE notifications ADD COLUMN event_key TEXT")
 
     payment_columns = {row[1] for row in cursor.execute("PRAGMA table_info(payments)").fetchall()}
-    if "payment_method" not in payment_columns:
-        cursor.execute("ALTER TABLE payments ADD COLUMN payment_method TEXT")
+    payment_extra_columns = {
+        "payment_method": "TEXT",
+        "invoice_number": "TEXT",
+        "discount_amount": "REAL DEFAULT 0",
+        "net_amount": "REAL",
+        "upi_transaction_id": "TEXT",
+    }
+    for column, column_type in payment_extra_columns.items():
+        if column not in payment_columns:
+            cursor.execute(f"ALTER TABLE payments ADD COLUMN {column} {column_type}")
 
     user_columns = {row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()}
     if "must_change_password" not in user_columns:
@@ -1183,6 +1211,22 @@ def finance_stats():
             "SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE status = 'Received' AND payment_method = 'UPI' AND strftime('%Y-%m', paid_on) = strftime('%Y-%m', 'now')"
         )["total"],
     }
+
+
+def next_invoice_number():
+    year = date.today().year
+    count = query_one(
+        "SELECT COUNT(*) AS count FROM payments WHERE invoice_number LIKE ?",
+        (f"SL-{year}-%",),
+    )["count"]
+    return f"SL-{year}-{count + 1:05d}"
+
+
+def money_value(value):
+    try:
+        return round(float(value or 0), 2)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def wa_link(phone, message):
@@ -2334,28 +2378,64 @@ def payments():
     if request.method == "POST":
         status = request.form["status"]
         paid_on = str(date.today()) if status == "Received" else None
-        execute(
+        amount = money_value(request.form["amount"])
+        discount_amount = money_value(request.form.get("discount_amount"))
+        net_amount = max(amount - discount_amount, 0)
+        invoice_number = next_invoice_number()
+        cursor = db().execute(
             """
-            INSERT INTO payments (member_id, amount, status, payment_method, paid_on, due_on, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO payments
+            (member_id, invoice_number, amount, discount_amount, net_amount, status, payment_method,
+             upi_transaction_id, paid_on, due_on, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 request.form["member_id"],
-                request.form["amount"],
+                invoice_number,
+                amount,
+                discount_amount,
+                net_amount,
                 status,
                 request.form.get("payment_method"),
+                request.form.get("upi_transaction_id"),
                 paid_on,
                 request.form.get("due_on"),
                 request.form.get("notes"),
             ),
         )
+        db().commit()
+        payment_id = cursor.lastrowid
         execute("UPDATE members SET payment_status = ? WHERE id = ?", ("Paid" if status == "Received" else "Due", request.form["member_id"]))
         member = query_one("SELECT * FROM members WHERE id = ?", (request.form["member_id"],))
         if status == "Received":
             method = request.form.get("payment_method") or "Not specified"
-            message = f"Payment received. Thank you {member['name']}! Amount: Rs {request.form['amount']}. Method: {method}."
+            renewal_start = request.form.get("renewal_start")
+            renewal_end = request.form.get("renewal_end")
+            if renewal_start or renewal_end:
+                execute(
+                    "UPDATE members SET subscription_start = COALESCE(?, subscription_start), subscription_end = COALESCE(?, subscription_end), plan_name = ? WHERE id = ?",
+                    (renewal_start or None, renewal_end or None, request.form.get("plan_name") or member["plan_name"], member["id"]),
+                )
+                execute(
+                    """
+                    INSERT INTO renewal_history
+                    (member_id, payment_id, plan_name, renewal_start, renewal_end, amount, discount_amount, payment_method)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        member["id"],
+                        payment_id,
+                        request.form.get("plan_name") or member["plan_name"],
+                        renewal_start,
+                        renewal_end,
+                        net_amount,
+                        discount_amount,
+                        method,
+                    ),
+                )
+            message = f"Payment received. Thank you {member['name']}! Invoice {invoice_number}, amount Rs {net_amount}. Method: {method}."
         else:
-            message = f"Payment reminder for {member['name']}: Rs {request.form['amount']} due on {request.form.get('due_on')}."
+            message = f"Payment reminder for {member['name']}: Rs {net_amount} due on {request.form.get('due_on')}. Invoice {invoice_number}."
         log_notification(member["id"], message)
         return redirect(url_for("payments"))
 
@@ -2367,6 +2447,13 @@ def payments():
         """
     )
     member_rows = query_all("SELECT id, name FROM members ORDER BY name")
+    renewal_rows = query_all(
+        """
+        SELECT renewal_history.*, members.name AS member_name
+        FROM renewal_history JOIN members ON members.id = renewal_history.member_id
+        ORDER BY renewal_history.id DESC LIMIT 12
+        """
+    )
     reminder_notifications = query_all(
         """
         SELECT notifications.*, members.name AS member_name, members.phone
@@ -2394,6 +2481,7 @@ def payments():
         reminder_notifications=reminder_notifications,
         due_count=due_count,
         reminder_days=PAYMENT_REMINDER_DAYS,
+        renewals=renewal_rows,
     )
 
 
@@ -2402,6 +2490,109 @@ def payments():
 def run_payment_reminders():
     result = queue_payment_due_reminders()
     return redirect(url_for("payments", created=result["created"], scanned=result["scanned"]))
+
+
+@app.route("/payments/<int:payment_id>/receipt.pdf")
+@role_required("admin", "owner", "accountant")
+def payment_receipt_pdf(payment_id):
+    payment = query_one(
+        """
+        SELECT payments.*, members.name AS member_name, members.phone, members.plan_name
+        FROM payments JOIN members ON members.id = payments.member_id
+        WHERE payments.id = ?
+        """,
+        (payment_id,),
+    )
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    y = height - 56
+    pdf.setFont("Helvetica-Bold", 20)
+    pdf.drawString(52, y, "StrengthLab Payment Receipt")
+    y -= 34
+    pdf.setFont("Helvetica", 11)
+    rows = [
+        ("Invoice", payment["invoice_number"] or f"SL-{payment['id']}"),
+        ("Member", payment["member_name"]),
+        ("Phone", payment["phone"] or "-"),
+        ("Plan", payment["plan_name"] or "-"),
+        ("Status", payment["status"]),
+        ("Payment method", payment["payment_method"] or "-"),
+        ("UPI transaction ID", payment["upi_transaction_id"] or "-"),
+        ("Amount", f"Rs {payment['amount'] or 0}"),
+        ("Discount", f"Rs {payment['discount_amount'] or 0}"),
+        ("Net paid/due", f"Rs {payment['net_amount'] or payment['amount'] or 0}"),
+        ("Paid on / Due on", payment["paid_on"] or payment["due_on"] or "-"),
+        ("Notes", payment["notes"] or "-"),
+    ]
+    for label, value in rows:
+        pdf.setFont("Helvetica-Bold", 10)
+        pdf.drawString(52, y, f"{label}:")
+        pdf.setFont("Helvetica", 10)
+        pdf.drawString(180, y, str(value))
+        y -= 22
+    pdf.setFont("Helvetica", 9)
+    pdf.drawString(52, 52, "Generated by StrengthLab Local")
+    pdf.save()
+    buffer.seek(0)
+    filename = f"{payment['invoice_number'] or 'receipt'}_receipt.pdf"
+    return send_file(buffer, as_attachment=True, download_name=filename, mimetype="application/pdf")
+
+
+@app.route("/payments/export.xlsx")
+@role_required("admin", "owner", "accountant")
+def export_payments_excel():
+    rows = query_all(
+        """
+        SELECT payments.*, members.name AS member_name, members.phone
+        FROM payments JOIN members ON members.id = payments.member_id
+        ORDER BY payments.id DESC
+        """
+    )
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Payments"
+    headers = [
+        "Invoice",
+        "Member",
+        "Phone",
+        "Amount",
+        "Discount",
+        "Net Amount",
+        "Status",
+        "Method",
+        "UPI Transaction ID",
+        "Paid On",
+        "Due On",
+        "Notes",
+    ]
+    sheet.append(headers)
+    for row in rows:
+        sheet.append(
+            [
+                row["invoice_number"],
+                row["member_name"],
+                row["phone"],
+                row["amount"],
+                row["discount_amount"],
+                row["net_amount"] or row["amount"],
+                row["status"],
+                row["payment_method"],
+                row["upi_transaction_id"],
+                row["paid_on"],
+                row["due_on"],
+                row["notes"],
+            ]
+        )
+    buffer = BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name=f"strengthlab_payments_{date.today().isoformat()}.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @app.route("/trainers", methods=["GET", "POST"])
