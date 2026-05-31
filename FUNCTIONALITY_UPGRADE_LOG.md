@@ -629,3 +629,82 @@ Sources reviewed:
 - Date range filters use `COALESCE(paid_on, due_on)`; if future records need separate paid/due filtering, add an explicit date-type selector.
 - No pagination yet, so very large histories may still need paging/export-first workflows.
 - No git commit or push executed for this goal turn.
+
+## 2026-06-01 - Structured plan versioning, rollback, and validation gates
+
+### Audit Findings
+
+- Plan editing still overwrote text fields in-place, so there was no durable version history or rollback.
+- Workout/diet plans were rich but mostly text-backed; structured persistence needed a backward-compatible bridge.
+- Save routes did not block risky conflicts (injury-vs-exercise, equipment mismatch hints, calorie sanity, restriction conflicts).
+
+### Decisions
+
+- Add `member_plan_versions` table for immutable plan snapshots.
+- Add backward-compatible JSON columns on `members`:
+  - `workout_plan_json`
+  - `diet_plan_json`
+- Keep current text fields active for compatibility while also writing structured JSON payloads.
+- Add save-time validators for:
+  - injury exercise conflicts
+  - basic equipment availability references
+  - calorie sanity range
+  - allergy/restriction conflicts
+- Add rollback route and member UI controls for:
+  - version status
+  - version note
+  - rollback action
+
+### Changed Files
+
+- `app.py`
+- `templates/member_detail.html`
+- `FUNCTIONALITY_UPGRADE_LOG.md`
+
+### Verification
+
+- `.venv\\Scripts\\python.exe -m py_compile app.py`
+- Flask route smoke test:
+  - Plan save creates version and redirects with `version_saved=1`.
+  - Validation block redirects with `plan_error=...` when knee injury conflicts with jump squat.
+  - Rollback route restores selected version and redirects with `rolled_back=<version>`.
+
+### Risks / Follow-ups
+
+- Current structured payload extraction is parser-lite; future phase should normalize per-day/per-exercise tables and dedicated macro/meal timing objects.
+- Validation coverage is practical but not exhaustive; additional rule sets can be added for more injuries and food conflicts.
+- No git commit or push executed for this goal turn.
+
+## 2026-06-01 - Upgraded Phase 8 Engine: Fully normalized day/exercise workout and diet JSON payload, explicit per-injury banned exercise matrix, available equipment hard validation, and premium ReportLab tables
+
+### Audit Findings
+
+- The previous structured payload extraction was parser-lite and split on raw colons, which is susceptible to formatting variances.
+- Banned exercises were validated only on basic substring rules (e.g. jump squat for knee injury) instead of an explicit, comprehensive matrix mapping injury categories to banned exercises.
+- Equipment checks were based on simple strings instead of a hard validation comparison of every exercise in the plan against the available gym equipment list and standard bodyweight movements.
+- PDF exports did not parse the structured JSON payload directly to build high-fidelity day-by-day table grids or styled diet recipe panels.
+
+### Decisions
+
+- Upgrade rule-based and parsed schemas to generate a fully normalized, detailed JSON payload (with structured day/exercise objects for workouts and calorie/meal/ingredients/macros arrays for diets).
+- Implement `BANNED_EXERCISES_MATRIX` keyword validation mapping injuries to specific banned moves.
+- Implement hard equipment validation that compares every exercise name in the plan against the current gym inventory (`equipment_names()`) and standard bodyweight/cardio movements.
+- Implement calorie sanity checks (1000–6000 kcal) and mathematically verify that protein, carbs, and fat gram targets sum to the calorie target within a 300 kcal margin.
+- Implement allergen exclusion mapping to explicitly flag matching allergen words and dietary style conflicts.
+- Redesign the ReportLab PDF export to parse the JSON payload directly and draw gorgeous day-by-day tables (Exercise, Sets, Reps, RPE, Rest, Cues/Substitutions) and visually aligned recipe card boxes with green macro badges.
+- Retain textwrap-based string renderers as clean fallbacks when legacy plans are exported.
+
+### Changed Files
+
+- `app.py`
+- `FUNCTIONALITY_UPGRADE_LOG.md`
+
+### Verification
+
+- `.venv\\Scripts\\python.exe -m py_compile app.py` compiled successfully.
+- Ran automated test suite `verify_phase8.py` in scratch directory, verifying all 5 core tests (JSON generation, Banned Injury Matrix, Equipment Hard Check, Calorie/Macro Sanity, Allergen & Dietary style) passed perfectly in a mock Flask application context.
+
+### Risks / Follow-ups
+
+- Validation warnings display cleanly on detail pages. Customizers can easily adjust sets/reps or swap out flagged moves.
+- No git commit or push executed for this goal turn.

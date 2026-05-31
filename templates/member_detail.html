@@ -150,6 +150,9 @@
   <a href="{{ url_for('payment_receipt_pdf', payment_id=request.args.get('payment_id')) }}">Open receipt PDF</a>
 </div>
 {% endif %}
+{% if request.args.get("version_saved") %}<div class="notice good">Plan version saved successfully.</div>{% endif %}
+{% if request.args.get("rolled_back") %}<div class="notice good">Rolled back to version {{ request.args.get("rolled_back") }}.</div>{% endif %}
+{% if request.args.get("plan_error") %}<div class="notice warn">{{ request.args.get("plan_error") }}</div>{% endif %}
 {% if request.args.get("frozen") %}<div class="notice warn">Membership frozen and member notification queued.</div>{% endif %}
 {% if request.args.get("unfrozen") %}<div class="notice good">Membership reactivated and member notification queued.</div>{% endif %}
 
@@ -433,10 +436,38 @@
       <button class="button" type="submit">Apply template</button>
     </form>
     <form class="plan-editor" method="post" action="{{ url_for('update_member_plans', member_id=member.id) }}">
+      <div class="grid-form">
+        <label>Plan status
+          <select name="plan_status">
+            <option value="draft">Draft</option>
+            <option value="active">Active</option>
+            <option value="archived">Archived</option>
+          </select>
+        </label>
+        <label class="span-3">Version note<input name="version_note" placeholder="What changed in this version"></label>
+      </div>
       <label>Workout plan<textarea name="workout_plan" rows="14">{{ member.workout_plan or '' }}</textarea></label>
       <label>Diet plan<textarea name="diet_plan" rows="14">{{ member.diet_plan or '' }}</textarea></label>
       <button class="button primary" type="submit">Save plan changes</button>
     </form>
+    <div class="panel" style="margin-top:12px;">
+      <div class="section-title"><h3>Plan versions</h3></div>
+      <div class="stack">
+        {% for version in plan_versions %}
+        <div class="item-row">
+          <div>
+            <strong>v{{ version.version_number }} · {{ version.plan_status }}</strong>
+            <small>{{ version.created_at }}{% if version.created_by_name %} · {{ version.created_by_name }}{% endif %}{% if version.notes %} · {{ version.notes }}{% endif %}</small>
+          </div>
+          <form method="post" action="{{ url_for('rollback_member_plan', member_id=member.id, version_id=version.id) }}">
+            <button class="button" type="submit">Rollback</button>
+          </form>
+        </div>
+        {% else %}
+        <p class="empty">No saved versions yet.</p>
+        {% endfor %}
+      </div>
+    </div>
     {% else %}
     <pre>{{ member.workout_plan or "No workout plan generated yet." }}</pre>
     {% endif %}

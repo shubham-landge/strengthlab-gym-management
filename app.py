@@ -845,6 +845,22 @@ def init_db():
             FOREIGN KEY(requested_by) REFERENCES users(id),
             FOREIGN KEY(decided_by) REFERENCES users(id)
         );
+
+        CREATE TABLE IF NOT EXISTS member_plan_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            member_id INTEGER NOT NULL,
+            version_number INTEGER NOT NULL,
+            plan_status TEXT DEFAULT 'draft',
+            workout_plan TEXT,
+            diet_plan TEXT,
+            workout_plan_json TEXT,
+            diet_plan_json TEXT,
+            created_by INTEGER,
+            notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(member_id) REFERENCES members(id),
+            FOREIGN KEY(created_by) REFERENCES users(id)
+        );
         """
     )
 
@@ -900,6 +916,10 @@ def init_db():
     for column, column_type in extra_member_columns.items():
         if column not in member_columns:
             cursor.execute(f"ALTER TABLE members ADD COLUMN {column} {column_type}")
+    if "workout_plan_json" not in member_columns:
+        cursor.execute("ALTER TABLE members ADD COLUMN workout_plan_json TEXT")
+    if "diet_plan_json" not in member_columns:
+        cursor.execute("ALTER TABLE members ADD COLUMN diet_plan_json TEXT")
     cursor.execute("UPDATE members SET workout_subscription = 'Regular' WHERE workout_subscription IS NULL")
     cursor.execute("UPDATE members SET diet_subscription = 'None' WHERE diet_subscription IS NULL")
     cursor.execute("UPDATE members SET workout_subscription = 'Premium' WHERE premium = 1 AND workout_subscription = 'Regular'")
@@ -1316,86 +1336,73 @@ def recipe_cards(member, calories, protein, carbs, fat):
     ]
 
 
+def is_json(text):
+    if not text:
+        return False
+    t = text.strip()
+    return (t.startswith("{") and t.endswith("}")) or (t.startswith("[") and t.endswith("]"))
+
+
 def generate_rule_based_plans(member):
     goal = member_text(member, "primary_fitness_goal") or member_text(member, "goal", "general fitness")
     level = member_text(member, "fitness_level", "Beginner")
     injury_text = member_text(member, "injury_notes")
     premium = bool(member["premium"])
     blueprint = workout_blueprint(level, goal, injury_text)
-    available = ", ".join(equipment_names())
-
-    workout_lines = [
-        "STRENGTHLAB TRAINING BLUEPRINT",
-        f"Goal: {goal}",
-        f"Level: {level}",
-        f"Split: {blueprint['split']} | Weekly frequency: {blueprint['days']} days",
-        f"Intensity: {blueprint['rpe']} | Default rest: {blueprint['rest']}",
-        "",
-        "Global warm-up: 5-8 min treadmill or cycle, then shoulder circles, hip openers, knee/ankle prep, and one light warm-up set.",
-    ]
+    
+    # Build exercises list
+    exercises_list = []
     for title, exercises in session_templates(blueprint["split"]):
-        workout_lines.extend(
-            [
-                "",
-                title,
-                "Warm-up: easy treadmill/cycle 5 min + movement-specific ramp set.",
-                "Main work:",
-            ]
-        )
         for exercise in exercises:
-            workout_lines.append(f"- {exercise}: {blueprint['sets']} sets x {blueprint['reps']} reps, {blueprint['rpe']}, rest {blueprint['rest']}.")
-        workout_lines.extend(
-            [
-                f"Conditioning: {blueprint['conditioning']}",
-                "Cool-down: 4-6 min slow walk/cycle, hamstring stretch, chest stretch, breathing reset.",
-                "Coach notes: keep form clean before loading; record load/reps after every session.",
-            ]
-        )
-    workout_lines.extend(
-        [
-            "",
-            f"Progression: {blueprint['progression']}",
-            f"Equipment basis: {available}",
-            f"Safety: {blueprint['safety']}",
-        ]
-    )
-    if premium:
-        workout_lines.append("Premium review: admin/trainer should review execution weekly and adjust volume or exercise selection.")
+            exercises_list.append({
+                "day": title,
+                "name": exercise,
+                "sets": blueprint['sets'],
+                "reps": blueprint['reps'],
+                "rpe_rir": blueprint['rpe'],
+                "rest_time": blueprint['rest'],
+                "coaching_cues": "Maintain neutral spine, control the eccentric phase, and focus on absolute form.",
+                "substitutions": "Substitute with similar variation using free weights or machines if equipment is occupied."
+            })
+
+    workout_json = {
+        "member_goal": goal,
+        "split_type": blueprint['split'],
+        "weekly_schedule": f"Split: {blueprint['split']} | Weekly frequency: {blueprint['days']} days",
+        "warm_up": "5-8 min treadmill or cycle, shoulder circles, hip openers, dynamic warm-up, and 1-2 progressive ramp-up sets.",
+        "exercises": exercises_list,
+        "progression_rules": blueprint['progression'],
+        "cool_down": "4-6 min slow walking/cycling, hamstring/quad/lat static stretches, deep breathing reset.",
+        "safety_notes": blueprint['safety']
+    }
 
     calories, protein, carbs, fat = nutrition_targets(member, goal)
     food_preference = member_text(member, "food_preference", "balanced local meals")
-    diet_lines = [
-        "STRENGTHLAB NUTRITION BLUEPRINT",
-        f"Goal: {goal}",
-        f"Food preference: {food_preference}",
-        f"Daily targets: {calories} kcal, protein {protein} g, carbs {carbs} g, fat {fat} g.",
-        "Meal timing: keep 3 main meals plus 1 snack unless the member prefers fewer meals.",
-        "Hydration: 35-45 ml water per kg body weight; add electrolytes after heavy sweat sessions.",
-        "Restriction rule: avoid listed allergies/exclusions first, then adjust protein source.",
-        "",
-        "Recipe cards:",
-    ]
+    exclusions_list = unpack_choices(member["food_exclusions"])
+    
+    meals_list = []
     for index, recipe in enumerate(recipe_cards(member, calories, protein, carbs, fat), start=1):
-        diet_lines.extend(
-            [
-                "",
-                f"{index}. {recipe['title']}",
-                f"Ingredients: {recipe['ingredients']}",
-                f"Steps: {recipe['steps']}",
-                f"Macros: {recipe['macros']}",
-            ]
-        )
-    diet_lines.extend(
-        [
-            "",
-            "Weekly adjustment: if weight is not moving for 2 weeks, adjust daily calories by 150-200 based on the goal.",
-            f"Safety: {blueprint['safety']} Nutrition guidance is educational and not medical treatment.",
-        ]
-    )
-    if premium:
-        diet_lines.append("Premium review: admin can add one flexible restaurant meal and a Sunday prep list.")
+        meals_list.append({
+            "title": recipe['title'],
+            "meal_time": "Standard daily interval timing",
+            "metric_ingredients": recipe['ingredients'],
+            "cooking_steps": [step.strip() for step in recipe['steps'].split(".") if step.strip()],
+            "local_indian_friendly_alternatives": "Use locally sourced whole grains, seasonal vegetables, low-fat paneer, tofu, or pulses as alternates.",
+            "macros": recipe['macros']
+        })
 
-    return "\n".join(workout_lines), "\n".join(diet_lines)
+    diet_json = {
+        "calories": calories,
+        "protein": protein,
+        "carbs": carbs,
+        "fat": fat,
+        "meal_timing": "Breakfast (8-9 AM), Lunch (1-2 PM), Snack (5-6 PM), Dinner (8-9 PM)",
+        "allergy_restriction_filtering": ", ".join(exclusions_list) if exclusions_list else "None",
+        "budget_friendly_substitutions": "Swap premium items with eggs, curd, peanuts, sunflower seeds, or local seasonal fruits/veggies.",
+        "meals": meals_list
+    }
+
+    return json.dumps(workout_json, indent=2, ensure_ascii=False), json.dumps(diet_json, indent=2, ensure_ascii=False)
 
 
 def apply_customization_notes(plan_text, customizations):
@@ -2029,6 +2036,39 @@ def level_schedule(level):
 def extract_day_plan(workout_plan, day_label):
     if not workout_plan:
         return []
+    if is_json(workout_plan):
+        try:
+            data = json.loads(workout_plan)
+            label_words = [word.lower() for word in day_label.replace("/", " ").split() if len(word) > 1]
+            picked = []
+            for ex in data.get("exercises", []):
+                day_val = ex.get("day", "").lower()
+                match = False
+                if all(word in day_val for word in label_words[:2]):
+                    match = True
+                elif day_label.lower() in day_val:
+                    match = True
+                
+                if match:
+                    name = ex.get("name", "Exercise")
+                    sets = ex.get("sets", "3")
+                    reps = ex.get("reps", "10")
+                    rpe = ex.get("rpe_rir", "RPE 8")
+                    rest = ex.get("rest_time", "90 sec")
+                    cues = ex.get("coaching_cues", "")
+                    subs = ex.get("substitutions", "")
+                    
+                    item = f"{name}: {sets} sets x {reps} reps, {rpe}, rest {rest}."
+                    if cues:
+                        item += f" Cue: {cues}."
+                    if subs:
+                        item += f" Sub: {subs}."
+                    picked.append(item)
+            if picked:
+                return picked
+        except Exception as e:
+            app.logger.error(f"Error parsing JSON in extract_day_plan: {e}")
+
     lines = [line.strip("- ").strip() for line in workout_plan.splitlines() if line.strip()]
     label_words = [word.lower() for word in day_label.replace("/", " ").split() if len(word) > 1]
     start = None
@@ -2091,6 +2131,22 @@ def personalized_today_plan(member):
         warmup = ["Treadmill or cycle 5-10 min easy", "Joint warm-up: shoulders, hips, knees, ankles", "1 light warm-up set"]
         stretch = ["Neck and shoulder release", "Hip opener", "Hamstring stretch", "Calf stretch"]
         cardio = "10-15 min easy treadmill or cycle after workout"
+
+    if is_json(member.get("workout_plan")):
+        try:
+            data = json.loads(member["workout_plan"])
+            w_text = data.get("warm_up", "")
+            if w_text:
+                warmup = [item.strip("- ") for item in w_text.splitlines() if item.strip()]
+            c_text = data.get("cool_down", "")
+            if c_text:
+                stretch = [item.strip("- ") for item in c_text.splitlines() if item.strip()]
+            prog = data.get("progression_rules", "")
+            safety = data.get("safety_notes", "")
+            if prog or safety:
+                cardio = f"Progression: {prog}. Safety: {safety}"
+        except Exception:
+            pass
 
     goal = member["primary_fitness_goal"] or member["goal"] or "General fitness"
     if "loss" in goal.lower() or "fat" in goal.lower():
@@ -3043,6 +3099,16 @@ def member_detail(member_id):
         """,
         (member_id,),
     )
+    plan_versions = query_all(
+        """
+        SELECT member_plan_versions.*, users.username AS created_by_name
+        FROM member_plan_versions LEFT JOIN users ON users.id = member_plan_versions.created_by
+        WHERE member_plan_versions.member_id = ?
+        ORDER BY member_plan_versions.version_number DESC
+        LIMIT 12
+        """,
+        (member_id,),
+    )
     return render_template(
         "member_detail.html",
         member=member,
@@ -3058,6 +3124,7 @@ def member_detail(member_id):
         today_completed_items=unpack_choices(checkin["completed_items"]) if checkin else [],
         workout_history=workout_history,
         freeze_history=freeze_history,
+        plan_versions=plan_versions,
         membership_plans=MEMBERSHIP_PLANS,
         renewal_defaults=renewal_defaults(member),
         profile_options=MEMBER_PROFILE_OPTIONS,
@@ -3106,6 +3173,321 @@ def days_between(start_text, end_text):
     except (TypeError, ValueError):
         return 0
     return max((end - start).days + 1, 1)
+
+
+def safe_json(value, fallback):
+    try:
+        return json.loads(value) if value else fallback
+    except Exception:
+        return fallback
+
+
+def build_structured_workout_payload(member, workout_plan):
+    if is_json(workout_plan):
+        try:
+            data = json.loads(workout_plan)
+            return {
+                "member_goal": data.get("member_goal") or member["primary_fitness_goal"] or member["goal"] or "General fitness",
+                "split_type": data.get("split_type") or "Custom Split",
+                "weekly_schedule": data.get("weekly_schedule") or "Custom Schedule",
+                "warm_up": data.get("warm_up") or "Universal warm-up routine.",
+                "exercises": data.get("exercises") or [],
+                "progression_rules": data.get("progression_rules") or "Increase intensity or volume weekly.",
+                "cool_down": data.get("cool_down") or "Stretching and cool-down.",
+                "safety_notes": data.get("safety_notes") or "Stop if you feel sharp joint pain."
+            }
+        except Exception:
+            pass
+
+    goal = member["primary_fitness_goal"] or member["goal"] or "General fitness"
+    exercises = []
+    current_day = "Plan Overview"
+    warm_up = "5-8 min treadmill or cycle, shoulder circles, hip openers"
+    cool_down = "4-6 min slow walk/cycle, dynamic stretching, breathing reset"
+    safety = "Avoid exercises causing sharp joint pain. Keep RPE target realistic."
+    progression = "Progress one variable weekly: cleaner form, one extra rep, or a small load increase."
+    split = "Full Body"
+
+    lines = [line.strip() for line in (workout_plan or "").splitlines() if line.strip()]
+    for line in lines:
+        lower = line.lower()
+        if lower.startswith("goal:"):
+            goal = line[5:].strip()
+        elif lower.startswith("split:"):
+            split = line[6:].strip().split("|")[0].strip()
+        elif lower.startswith("global warm-up:") or lower.startswith("warm-up:"):
+            warm_up = line.split(":", 1)[1].strip()
+        elif lower.startswith("progression:"):
+            progression = line[12:].strip()
+        elif lower.startswith("safety:"):
+            safety = line[7:].strip()
+        elif lower.endswith(":") and len(line) < 64:
+            current_day = line[:-1].strip()
+        elif line.startswith("-") or (current_day != "Plan Overview" and (line.startswith("Day") or ":" in line)):
+            clean_line = line.lstrip("- ").strip()
+            name = clean_line
+            sets = "3"
+            reps = "8-12"
+            rpe = "RPE 8"
+            rest = "90 sec"
+            cues = ""
+            subs = ""
+
+            if ":" in clean_line:
+                name, details = clean_line.split(":", 1)
+                name = name.strip()
+                parts = [p.strip() for p in details.split(",") if p.strip()]
+                for part in parts:
+                    p_lower = part.lower()
+                    if "sets" in p_lower and "x" in p_lower:
+                        sub_parts = p_lower.split("x")
+                        sets = sub_parts[0].replace("sets", "").strip()
+                        reps = sub_parts[1].replace("reps", "").strip()
+                    elif "sets" in p_lower:
+                        sets = part.split()[0]
+                    elif "reps" in p_lower:
+                        reps = part.split()[0]
+                    elif "rpe" in p_lower or "rir" in p_lower:
+                        rpe = part
+                    elif "rest" in p_lower:
+                        rest = part.replace("rest", "").strip()
+                    elif "cue:" in p_lower:
+                        cues = part.split(":", 1)[1].strip()
+                    elif "sub:" in p_lower:
+                        subs = part.split(":", 1)[1].strip()
+
+            exercises.append({
+                "day": current_day,
+                "name": name,
+                "sets": sets,
+                "reps": reps,
+                "rpe_rir": rpe,
+                "rest_time": rest,
+                "coaching_cues": cues or "Focus on perfect form and tempo.",
+                "substitutions": subs or "Substitute with a similar variation."
+            })
+
+    return {
+        "member_goal": goal,
+        "split_type": split,
+        "weekly_schedule": f"Split: {split}",
+        "warm_up": warm_up,
+        "exercises": exercises,
+        "progression_rules": progression,
+        "cool_down": cool_down,
+        "safety_notes": safety
+    }
+
+
+def build_structured_diet_payload(member, diet_plan):
+    if is_json(diet_plan):
+        try:
+            data = json.loads(diet_plan)
+            return {
+                "calories": int(data.get("calories", 2000)),
+                "protein": int(data.get("protein", 130)),
+                "carbs": int(data.get("carbs", 200)),
+                "fat": int(data.get("fat", 70)),
+                "meal_timing": data.get("meal_timing") or "Standard daily intervals.",
+                "allergy_restriction_filtering": data.get("allergy_restriction_filtering") or "None",
+                "budget_friendly_substitutions": data.get("budget_friendly_substitutions") or "Use local budget sources.",
+                "meals": data.get("meals") or []
+            }
+        except Exception:
+            pass
+
+    calories, protein, carbs, fat = nutrition_targets(member, member["primary_fitness_goal"] or member["goal"] or "")
+    meals = []
+    current_meal = None
+
+    lines = [line.strip() for line in (diet_plan or "").splitlines() if line.strip()]
+    for line in lines:
+        lower = line.lower()
+        if lower.startswith("daily targets:") or "kcal" in lower:
+            try:
+                for part in lower.split(","):
+                    if "kcal" in part:
+                        calories = int(part.replace("daily targets:", "").replace("kcal", "").strip())
+                    elif "protein" in part:
+                        protein = int(part.replace("protein", "").replace("g", "").strip())
+                    elif "carbs" in part:
+                        carbs = int(part.replace("carbs", "").replace("g", "").strip())
+                    elif "fat" in part:
+                        fat = int(part.replace("fat", "").replace("g", "").strip())
+            except Exception:
+                pass
+        elif line[:2].isdigit() and "." in line:
+            if current_meal:
+                meals.append(current_meal)
+            current_meal = {
+                "title": line.split(".", 1)[1].strip(),
+                "meal_time": "Standard daily timing",
+                "metric_ingredients": "",
+                "cooking_steps": [],
+                "local_indian_friendly_alternatives": "Use equivalent locally sourced variations.",
+                "macros": ""
+            }
+        elif lower.startswith("ingredients:") and current_meal:
+            current_meal["metric_ingredients"] = line.split(":", 1)[1].strip()
+        elif lower.startswith("steps:") and current_meal:
+            current_meal["cooking_steps"] = [step.strip() for step in line.split(":", 1)[1].split(".") if step.strip()]
+        elif lower.startswith("macros:") and current_meal:
+            current_meal["macros"] = line.split(":", 1)[1].strip()
+
+    if current_meal:
+        meals.append(current_meal)
+
+    return {
+        "calories": calories,
+        "protein": protein,
+        "carbs": carbs,
+        "fat": fat,
+        "meal_timing": "3 main meals and 1 snack daily",
+        "allergy_restriction_filtering": ", ".join(unpack_choices(member["food_exclusions"])),
+        "budget_friendly_substitutions": "Use locally sourced ingredients and seasonal foods.",
+        "meals": meals
+    }
+
+
+def next_plan_version(member_id):
+    row = query_one("SELECT COALESCE(MAX(version_number), 0) AS current FROM member_plan_versions WHERE member_id = ?", (member_id,))
+    return (row["current"] or 0) + 1
+
+
+def create_plan_version(member_id, workout_plan, diet_plan, workout_json, diet_json, user_id, status="draft", notes=None):
+    execute(
+        """
+        INSERT INTO member_plan_versions
+        (member_id, version_number, plan_status, workout_plan, diet_plan, workout_plan_json, diet_plan_json, created_by, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            member_id,
+            next_plan_version(member_id),
+            status,
+            workout_plan,
+            diet_plan,
+            json.dumps(workout_json, ensure_ascii=True),
+            json.dumps(diet_json, ensure_ascii=True),
+            user_id,
+            notes,
+        ),
+    )
+
+
+def validate_plan_update(member, workout_plan, diet_plan):
+    errors = []
+    def member_val(key, default=""):
+        if isinstance(member, dict):
+            return member.get(key, default)
+        if hasattr(member, "keys") and key in member.keys():
+            return member[key]
+        return default
+    
+    # 1. Banned Exercises Injury Matrix Check
+    BANNED_EXERCISES_MATRIX = {
+        "knee": ["squat", "leg press", "lunge", "leg extension", "split squat", "knee extension"],
+        "shoulder": ["shoulder press", "overhead press", "military press", "bench press", "incline press", "barbell press", "dumbbell press", "dip", "fly", "pec deck"],
+        "back": ["deadlift", "back extension", "squat", "romanian deadlift", "good morning"],
+        "wrist": ["pushup", "dip", "barbell curl", "wrist curl", "clean"],
+        "elbow": ["chin-up", "pull-up", "skull crusher", "tricep extension", "french press"],
+        "ankle": ["calf raise", "squat", "lunge"]
+    }
+    
+    workout_json = build_structured_workout_payload(member, workout_plan)
+    exercise_names_list = [ex["name"].lower() for ex in workout_json.get("exercises", [])]
+    injury_notes = (member_val("injury_notes") or "").lower()
+    
+    for key, banned_keywords in BANNED_EXERCISES_MATRIX.items():
+        if key in injury_notes:
+            for ex_name in exercise_names_list:
+                for banned in banned_keywords:
+                    if banned in ex_name:
+                        errors.append(f"Safety Violation: Exercise '{ex_name.title()}' is banned due to '{key.title()}' injury notes.")
+
+    # 2. Hard Equipment Validation Against Gym Inventory
+    gym_equipment = [eq.lower() for eq in equipment_names()]
+    BODYWEIGHT_AND_STANDARD = [
+        "bodyweight", "stretch", "walk", "running", "jogging", "rest", "recovery", "mobility", "cardio", "breathing",
+        "treadmill", "cycle", "stationary bike", "stairs", "plank", "pushup", "push-up", "pushups", "chin-up", "chinup",
+        "pull-up", "pullup", "dip", "dips", "squat", "lunges", "lunge", "situp", "crunch", "crunches", "leg raise", "knee raise",
+        "hanging leg raise", "hanging knee raise", "burpee", "jumping jack", "plank hold", "hollow body", "dead bug",
+        "cobra", "child's pose", "yoga"
+    ]
+    
+    for ex in workout_json.get("exercises", []):
+        name = ex["name"]
+        name_lower = name.lower()
+        is_bodyweight = any(keyword in name_lower for keyword in BODYWEIGHT_AND_STANDARD)
+        if is_bodyweight:
+            continue
+            
+        has_equipment = False
+        for eq in gym_equipment:
+            if eq in name_lower or name_lower in eq:
+                has_equipment = True
+                break
+        if not has_equipment:
+            errors.append(f"Equipment Error: Exercise '{name}' requires equipment not available in StrengthLab inventory.")
+
+    # 3. Calorie Sanity Check & Macro Sum check
+    diet_json = build_structured_diet_payload(member, diet_plan)
+    cal = diet_json.get("calories", 0)
+    pro = diet_json.get("protein", 0)
+    carb = diet_json.get("carbs", 0)
+    fat = diet_json.get("fat", 0)
+    
+    if cal < 1000 or cal > 6000:
+        errors.append(f"Calorie Target: Target ({cal} kcal) is outside sanity bounds (1000-6000 kcal).")
+    else:
+        macro_cals = pro * 4 + carb * 4 + fat * 9
+        if abs(macro_cals - cal) > 300:
+            errors.append(f"Calorie Target: Macro sum ({macro_cals} kcal) deviates from Calorie target ({cal} kcal) by >300 kcal.")
+
+    # 4. Allergen Exclusion Check
+    exclusions = [x.lower() for x in unpack_choices(member_val("food_exclusions") or "")]
+    avoided = (member_val("other_foods_avoided") or "").lower()
+    dietary_style = (member_val("dietary_style") or "").lower()
+    
+    conflict_map = {
+        "lactose intolerant": ["milk", "paneer", "whey"],
+        "gluten-free / celiac": ["wheat", "roti", "bread", "gluten"],
+        "no nuts / peanuts": ["peanut", "almond", "cashew", "nut"],
+        "no soy / tofu": ["tofu", "soy"],
+        "no seafood / fish allergies": ["fish", "prawn", "seafood"],
+    }
+    
+    for meal in diet_json.get("meals", []):
+        title_lower = meal.get("title", "").lower()
+        ing_lower = meal.get("metric_ingredients", "").lower()
+        steps_lower = " ".join(meal.get("cooking_steps", [])).lower()
+        combined = f"{title_lower} {ing_lower} {steps_lower}"
+        
+        for rule, banned_words in conflict_map.items():
+            if rule in exclusions:
+                for word in banned_words:
+                    if word in combined:
+                        errors.append(f"Allergen Conflict: Meal '{meal['title']}' contains banned exclusion '{rule}': '{word}'.")
+        
+        for excl in exclusions:
+            if excl in combined and not any(excl in rule for rule in conflict_map.keys()):
+                errors.append(f"Allergen Conflict: Meal '{meal['title']}' contains exclusion: '{excl}'.")
+                
+        if avoided and avoided in combined:
+            errors.append(f"Allergen Conflict: Meal '{meal['title']}' contains avoided food: '{avoided}'.")
+            
+        if "vegetarian" in dietary_style or "veg" in dietary_style:
+            non_veg_keywords = ["chicken", "fish", "mutton", "beef", "pork", "shrimp", "prawn", "seafood"]
+            for kw in non_veg_keywords:
+                if kw in combined:
+                    errors.append(f"Dietary Conflict: Vegetarian meal '{meal['title']}' contains non-veg ingredient: '{kw}'.")
+        if "vegan" in dietary_style:
+            non_vegan_keywords = ["chicken", "fish", "mutton", "beef", "pork", "shrimp", "prawn", "seafood", "milk", "paneer", "cheese", "butter", "curd", "yogurt", "egg", "ghee"]
+            for kw in non_vegan_keywords:
+                if kw in combined:
+                    errors.append(f"Dietary Conflict: Vegan meal '{meal['title']}' contains non-vegan ingredient: '{kw}'.")
+                    
+    return errors
 
 
 @app.route("/members/<int:member_id>/freeze", methods=["POST"])
@@ -3293,7 +3675,7 @@ def add_progress(member_id):
 
 
 @app.route("/members/<int:member_id>/plans", methods=["POST"])
-@role_required("admin")
+@role_required("admin", "trainer")
 def update_member_plans(member_id):
     member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
     user = current_user()
@@ -3302,12 +3684,54 @@ def update_member_plans(member_id):
 
     workout_plan = request.form.get("workout_plan", "").strip()
     diet_plan = request.form.get("diet_plan", "").strip()
+    validation_errors = validate_plan_update(member, workout_plan, diet_plan)
+    if validation_errors:
+        return redirect(url_for("member_detail", member_id=member_id, plan_error=" | ".join(validation_errors)))
+    workout_json = build_structured_workout_payload(member, workout_plan)
+    diet_json = build_structured_diet_payload(member, diet_plan)
+    status = request.form.get("plan_status") or "draft"
+    create_plan_version(
+        member_id,
+        workout_plan,
+        diet_plan,
+        workout_json,
+        diet_json,
+        user["id"],
+        status=status,
+        notes=request.form.get("version_note"),
+    )
     execute(
-        "UPDATE members SET workout_plan = ?, diet_plan = ? WHERE id = ?",
-        (workout_plan, diet_plan, member_id),
+        "UPDATE members SET workout_plan = ?, diet_plan = ?, workout_plan_json = ?, diet_plan_json = ? WHERE id = ?",
+        (
+            workout_plan,
+            diet_plan,
+            json.dumps(workout_json, ensure_ascii=True),
+            json.dumps(diet_json, ensure_ascii=True),
+            member_id,
+        ),
     )
 
-    return redirect(url_for("member_detail", member_id=member_id))
+    return redirect(url_for("member_detail", member_id=member_id, version_saved=1))
+
+
+@app.route("/members/<int:member_id>/plans/rollback/<int:version_id>", methods=["POST"])
+@role_required("admin", "trainer")
+def rollback_member_plan(member_id, version_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    user = current_user()
+    if not can_view_member(user, member):
+        return redirect(url_for("index"))
+    version = query_one(
+        "SELECT * FROM member_plan_versions WHERE id = ? AND member_id = ?",
+        (version_id, member_id),
+    )
+    if not version:
+        return redirect(url_for("member_detail", member_id=member_id))
+    execute(
+        "UPDATE members SET workout_plan = ?, diet_plan = ?, workout_plan_json = ?, diet_plan_json = ? WHERE id = ?",
+        (version["workout_plan"], version["diet_plan"], version["workout_plan_json"], version["diet_plan_json"], member_id),
+    )
+    return redirect(url_for("member_detail", member_id=member_id, rolled_back=version["version_number"]))
 
 
 @app.route("/members/<int:member_id>/plans/apply-template", methods=["POST"])
@@ -4104,6 +4528,122 @@ def diet_pdf(member_id):
         pdf.drawCentredString(box_x + 46, current_y - 54, "photo / form cue")
         return current_y - panel_height - 10
 
+    def draw_workout_day_table(day_name, exercises, current_y):
+        needed = 50 + len(exercises) * 25 + 15
+        current_y = ensure_space(current_y, needed)
+        
+        pdf.setFillColorRGB(0.92, 0.94, 0.98)
+        pdf.setStrokeColorRGB(0.80, 0.85, 0.92)
+        pdf.roundRect(margin, current_y - 22, page_width, 22, 4, fill=True, stroke=True)
+        pdf.setFillColorRGB(0.12, 0.25, 0.69)
+        pdf.setFont("Helvetica-Bold", 10)
+        pdf.drawString(margin + 10, current_y - 15, day_name.upper())
+        current_y -= 22
+        
+        pdf.setFillColorRGB(0.96, 0.97, 0.99)
+        pdf.rect(margin, current_y - 16, page_width, 16, fill=True, stroke=True)
+        pdf.setFillColorRGB(0.3, 0.35, 0.45)
+        pdf.setFont("Helvetica-Bold", 8)
+        pdf.drawString(margin + 8, current_y - 11, "EXERCISE")
+        pdf.drawString(margin + 180, current_y - 11, "SETS")
+        pdf.drawString(margin + 220, current_y - 11, "REPS")
+        pdf.drawString(margin + 270, current_y - 11, "RPE/RIR")
+        pdf.drawString(margin + 340, current_y - 11, "REST")
+        pdf.drawString(margin + 395, current_y - 11, "CUES / SUBSTITUTIONS")
+        current_y -= 16
+        
+        for ex in exercises:
+            pdf.setFillColorRGB(1, 1, 1)
+            pdf.rect(margin, current_y - 25, page_width, 25, fill=True, stroke=True)
+            pdf.setFillColorRGB(0.06, 0.09, 0.16)
+            
+            name = ex.get("name", "Exercise")[:34]
+            pdf.setFont("Helvetica-Bold", 8)
+            pdf.drawString(margin + 8, current_y - 16, name)
+            
+            pdf.setFont("Helvetica", 8)
+            pdf.drawString(margin + 180, current_y - 16, str(ex.get("sets", "3")))
+            pdf.drawString(margin + 220, current_y - 16, str(ex.get("reps", "10")))
+            pdf.drawString(margin + 270, current_y - 16, str(ex.get("rpe_rir", "RPE 8")))
+            pdf.drawString(margin + 340, current_y - 16, str(ex.get("rest_time", "90s")))
+            
+            cues = ex.get("coaching_cues", "")
+            subs = ex.get("substitutions", "")
+            cues_subs_text = ""
+            if cues:
+                cues_subs_text += f"Cue: {cues}"
+            if subs:
+                if cues_subs_text:
+                    cues_subs_text += " | "
+                cues_subs_text += f"Sub: {subs}"
+            cues_subs_text = cues_subs_text[:40]
+            pdf.setFillColorRGB(0.39, 0.45, 0.55)
+            pdf.setFont("Helvetica-Oblique", 7.5)
+            pdf.drawString(margin + 395, current_y - 16, cues_subs_text)
+            
+            current_y -= 25
+            
+        return current_y - 10
+
+    def draw_diet_recipe_cards_json(meals, current_y):
+        for meal in meals:
+            needed = 110
+            current_y = ensure_space(current_y, needed)
+            
+            pdf.setFillColorRGB(1, 1, 1)
+            pdf.setStrokeColorRGB(0.82, 0.87, 0.94)
+            pdf.roundRect(margin, current_y - 96, page_width, 96, 6, fill=True, stroke=True)
+            
+            pdf.setFillColorRGB(0.12, 0.25, 0.69)
+            pdf.roundRect(margin + 1, current_y - 20, page_width - 2, 19, 4, fill=True, stroke=False)
+            pdf.setFillColorRGB(1, 1, 1)
+            pdf.setFont("Helvetica-Bold", 9.5)
+            title = meal.get("title", "Meal")
+            time_val = meal.get("meal_time", "")
+            if time_val:
+                title = f"{title} ({time_val})"
+            pdf.drawString(margin + 10, current_y - 14, title[:82])
+            
+            pdf.setFillColorRGB(0.06, 0.09, 0.16)
+            pdf.setFont("Helvetica-Bold", 8)
+            pdf.drawString(margin + 10, current_y - 34, "Ingredients:")
+            pdf.setFont("Helvetica", 8)
+            ingredients = meal.get("metric_ingredients", "")
+            wrapped_ing = textwrap.wrap(ingredients, width=105)[:2]
+            ing_y = current_y - 34
+            for line in wrapped_ing:
+                pdf.drawString(margin + 70, ing_y, line)
+                ing_y -= 9
+                
+            pdf.setFillColorRGB(0.06, 0.09, 0.16)
+            pdf.setFont("Helvetica-Bold", 8)
+            pdf.drawString(margin + 10, current_y - 56, "Steps:")
+            pdf.setFont("Helvetica", 7.8)
+            steps = " ".join(meal.get("cooking_steps", []))
+            wrapped_steps = textwrap.wrap(steps, width=105)[:2]
+            step_y = current_y - 56
+            for line in wrapped_steps:
+                pdf.drawString(margin + 70, step_y, line)
+                step_y -= 9
+
+            pdf.setFillColorRGB(0.39, 0.45, 0.55)
+            pdf.setFont("Helvetica-Bold", 7.5)
+            pdf.drawString(margin + 10, current_y - 78, "Local Alts:")
+            pdf.setFont("Helvetica-Oblique", 7.5)
+            alts = meal.get("local_indian_friendly_alternatives", "")
+            pdf.drawString(margin + 70, current_y - 78, alts[:85])
+            
+            pdf.setFillColorRGB(0.92, 0.98, 0.92)
+            pdf.setStrokeColorRGB(0.7, 0.9, 0.7)
+            macros_box_x = margin + page_width - 150
+            pdf.roundRect(macros_box_x, current_y - 91, 140, 12, 3, fill=True, stroke=True)
+            pdf.setFillColorRGB(0.1, 0.4, 0.1)
+            pdf.setFont("Helvetica-Bold", 7)
+            pdf.drawCentredString(macros_box_x + 70, current_y - 88, f"Macros: {meal.get('macros', 'N/A')}")
+            
+            current_y -= 106
+        return current_y
+
     def split_plan_sections(text):
         sections = []
         current_title = "Plan overview"
@@ -4173,15 +4713,66 @@ def diet_pdf(member_id):
     y -= 78
 
     y = draw_section_header("Workout Plan", y)
-    workout_sections = split_plan_sections(member["workout_plan"] or "No workout plan generated yet.")
-    if workout_sections:
-        for title, lines in workout_sections[:12]:
-            y = draw_instruction_panel(title, lines, y)
+    
+    workout_plan = member["workout_plan"] or ""
+    if is_json(workout_plan):
+        try:
+            data = json.loads(workout_plan)
+            from collections import OrderedDict
+            days_map = OrderedDict()
+            for ex in data.get("exercises", []):
+                day = ex.get("day", "Day 1")
+                if day not in days_map:
+                    days_map[day] = []
+                days_map[day].append(ex)
+            
+            if days_map:
+                for day_name, exercises in days_map.items():
+                    y = draw_workout_day_table(day_name, exercises, y)
+            else:
+                y = draw_wrapped("No workout exercises found in JSON plan.", y)
+                
+            y = ensure_space(y, 45)
+            y = draw_wrapped(f"Warm-up Guidelines: {data.get('warm_up', '')}", y, font="Helvetica-Bold", size=8.5)
+            y = draw_wrapped(f"Progression Guidelines: {data.get('progression_rules', '')}", y, font="Helvetica-Oblique", size=8.5)
+        except Exception as e:
+            y = draw_wrapped(f"Error rendering structured plan: {e}. Legacy text: {workout_plan}", y)
     else:
-        y = draw_wrapped("No workout plan generated yet.", y)
+        workout_sections = split_plan_sections(workout_plan or "No workout plan generated yet.")
+        if workout_sections:
+            for title, lines in workout_sections[:12]:
+                y = draw_instruction_panel(title, lines, y)
+        else:
+            y = draw_wrapped("No workout plan generated yet.", y)
+            
     y -= 8
     y = draw_section_header("Nutrition Recipe Cards", y)
-    y = draw_recipe_cards(member["diet_plan"] or "No diet plan generated yet.", y)
+    
+    diet_plan = member["diet_plan"] or ""
+    if is_json(diet_plan):
+        try:
+            data = json.loads(diet_plan)
+            meals = data.get("meals", [])
+            if meals:
+                y = draw_diet_recipe_cards_json(meals, y)
+            else:
+                y = draw_wrapped("No meals found in JSON plan.", y)
+                
+            y = ensure_space(y, 45)
+            pdf.setFillColorRGB(0.96, 0.98, 1)
+            pdf.roundRect(margin, y - 30, page_width, 30, 4, fill=True, stroke=False)
+            pdf.setFillColorRGB(0.12, 0.25, 0.69)
+            pdf.setFont("Helvetica-Bold", 8.5)
+            pdf.drawString(margin + 10, y - 12, "DIET SUMMARY")
+            pdf.setFillColorRGB(0.06, 0.09, 0.16)
+            pdf.setFont("Helvetica", 8)
+            pdf.drawString(margin + 10, y - 24, f"Daily Calories: {data.get('calories', '')} kcal | Protein: {data.get('protein', '')}g | Carbs: {data.get('carbs', '')}g | Fat: {data.get('fat', '')}g | Timing: {data.get('meal_timing', '')}")
+            y -= 38
+        except Exception as e:
+            y = draw_wrapped(f"Error rendering structured diet: {e}. Legacy text: {diet_plan}", y)
+    else:
+        y = draw_recipe_cards(diet_plan or "No diet plan generated yet.", y)
+        
     y -= 8
     y = draw_section_header("Safety and Coach Notes", y)
     y = draw_instruction_panel(
