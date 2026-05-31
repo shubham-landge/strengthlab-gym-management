@@ -1,55 +1,103 @@
 {% extends "base.html" %}
 {% block content %}
 <header class="page-header">
-  <div><p class="eyebrow">Admin</p><h1>Member management</h1></div>
+  <div>
+    <p class="eyebrow">Admin Console</p>
+    <h1>Member management</h1>
+  </div>
 </header>
 
 {% if current_user.role == "admin" %}
 <section class="panel">
-  <h2>Add member with generated plans</h2>
+  <div class="section-title">
+    <h2 style="display:flex; align-items:center; gap:8px;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+      <span>Add member with generated plans</span>
+    </h2>
+  </div>
   <form class="grid-form" method="post" action="{{ url_for('add_member') }}">
     <input name="name" placeholder="Full name" required>
     <input name="phone" placeholder="WhatsApp phone with country code" required>
-    <input name="email" type="email" placeholder="Email">
+    <input name="email" type="email" placeholder="Email (optional)">
     <input name="age" type="number" placeholder="Age">
-    <select name="gender"><option value="">Gender</option><option>Female</option><option>Male</option><option>Other</option></select>
+    <select name="gender">
+      <option value="">Gender</option>
+      <option>Female</option>
+      <option>Male</option>
+      <option>Other</option>
+    </select>
     <input name="height_cm" type="number" step="0.1" placeholder="Height cm">
     <input name="weight_kg" type="number" step="0.1" placeholder="Weight kg">
     <input name="goal" placeholder="Goal, e.g. fat loss, muscle gain">
-    <select name="fitness_level"><option>Beginner</option><option>Intermediate</option><option>Advanced</option><option>Rehab / low impact</option></select>
-    <input name="food_preference" placeholder="Food preference">
+    <select name="fitness_level">
+      <option>Beginner</option>
+      <option>Intermediate</option>
+      <option>Advanced</option>
+      <option>Rehab / low impact</option>
+    </select>
+    <input name="food_preference" placeholder="Food preference, e.g. Vegetarian">
     <input name="medical_notes" placeholder="Health declaration / medical notes">
     <input name="injury_notes" placeholder="Injury notes">
     <input name="emergency_contact" placeholder="Emergency contact">
-    <select name="plan_name"><option>Monthly</option><option>Quarterly</option><option>Annual</option></select>
-    <select name="trainer_id"><option value="">Assign trainer</option>{% for trainer in trainers %}<option value="{{ trainer.id }}">{{ trainer.name }}</option>{% endfor %}</select>
-    <select name="workout_subscription"><option>Regular</option><option>Premium</option></select>
-    <select name="diet_subscription"><option>None</option><option>Regular</option><option>Premium</option></select>
-    <button class="button primary" type="submit">Create member</button>
+    <select name="plan_name">
+      <option>Monthly</option>
+      <option>Quarterly</option>
+      <option>Annual</option>
+    </select>
+    <select name="trainer_id">
+      <option value="">Assign trainer</option>
+      {% for trainer in trainers %}
+      <option value="{{ trainer.id }}">{{ trainer.name }}</option>
+      {% endfor %}
+    </select>
+    <select name="workout_subscription">
+      <option>Regular</option>
+      <option>Premium</option>
+    </select>
+    <select name="diet_subscription">
+      <option>None</option>
+      <option>Regular</option>
+      <option>Premium</option>
+    </select>
+    <button class="button primary" style="grid-column: 1 / -1; margin-top:10px;" type="submit">Create member profile</button>
   </form>
 </section>
 {% endif %}
 
 <section class="panel">
-  <div class="section-title"><h2>Find members</h2><small>{{ members|length }} result(s)</small></div>
+  <div class="section-title">
+    <h2 style="display:flex; align-items:center; gap:8px;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <span>Find members</span>
+    </h2>
+    <small>{{ members|length }} result(s)</small>
+  </div>
   <form class="grid-form member-filters" method="get">
-    <label>Search<input name="q" value="{{ filters.q }}" placeholder="Name, phone, or goal"></label>
+    <label>Search
+      <input name="q" value="{{ filters.q }}" placeholder="Name, phone, or goal">
+    </label>
     <label>Status
       <select name="status">
         <option value="">All statuses</option>
-        {% for status in ["Paid", "Due", "Frozen"] %}<option value="{{ status }}" {% if filters.status == status %}selected{% endif %}>{{ status }}</option>{% endfor %}
+        {% for status in ["Paid", "Due", "Frozen"] %}
+        <option value="{{ status }}" {% if filters.status == status %}selected{% endif %}>{{ status }}</option>
+        {% endfor %}
       </select>
     </label>
-    <label>Workout
+    <label>Workout subscription
       <select name="workout_subscription">
         <option value="">All workout services</option>
-        {% for option in ["Regular", "Premium"] %}<option value="{{ option }}" {% if filters.workout_subscription == option %}selected{% endif %}>{{ option }}</option>{% endfor %}
+        {% for option in ["Regular", "Premium"] %}
+        <option value="{{ option }}" {% if filters.workout_subscription == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
       </select>
     </label>
-    <label>Diet
+    <label>Diet subscription
       <select name="diet_subscription">
         <option value="">All diet services</option>
-        {% for option in ["None", "Regular", "Premium"] %}<option value="{{ option }}" {% if filters.diet_subscription == option %}selected{% endif %}>{{ option }}</option>{% endfor %}
+        {% for option in ["None", "Regular", "Premium"] %}
+        <option value="{{ option }}" {% if filters.diet_subscription == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
       </select>
     </label>
     {% if current_user.role in ["admin", "owner"] %}
@@ -57,33 +105,51 @@
       <select name="trainer_id">
         <option value="">All trainers</option>
         <option value="unassigned" {% if filters.trainer_id == "unassigned" %}selected{% endif %}>Unassigned</option>
-        {% for trainer in trainers %}<option value="{{ trainer.id }}" {% if filters.trainer_id == trainer.id|string %}selected{% endif %}>{{ trainer.name }}</option>{% endfor %}
+        {% for trainer in trainers %}
+        <option value="{{ trainer.id }}" {% if filters.trainer_id == trainer.id|string %}selected{% endif %}>{{ trainer.name }}</option>
+        {% endfor %}
       </select>
     </label>
     {% endif %}
-    <button class="button primary" type="submit">Apply filters</button>
-    <a class="button" href="{{ url_for('members') }}">Clear</a>
+    <button class="button primary" style="margin-top:21px; min-height:43px;" type="submit">Apply filters</button>
+    <a class="button" style="margin-top:21px; min-height:43px; display:inline-flex; align-items:center; justify-content:center;" href="{{ url_for('members') }}">Clear</a>
   </form>
 </section>
 
 <section class="table-wrap">
   <table>
-    <thead><tr><th>Name</th><th>Phone</th><th>Goal</th><th>Plan</th><th>Status</th><th>Services</th><th>Trainer</th><th></th></tr></thead>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Phone</th>
+        <th>Goal</th>
+        <th>Plan</th>
+        <th>Status</th>
+        <th>Services</th>
+        <th>Trainer</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
     <tbody>
       {% for member in members %}
       <tr>
-        <td data-label="Name"><a href="{{ url_for('member_detail', member_id=member.id) }}">{{ member.name }}</a></td>
+        <td data-label="Name"><a href="{{ url_for('member_detail', member_id=member.id) }}" style="font-weight:700;">{{ member.name }}</a></td>
         <td data-label="Phone">{{ member.phone }}</td>
-        <td data-label="Goal">{{ member.goal or "General" }}</td>
+        <td data-label="Goal"><span class="pill" style="background:var(--panel-2); color:var(--ink); border: 1px solid var(--line);">{{ member.goal or "General" }}</span></td>
         <td data-label="Plan">{{ member.plan_name }}</td>
-        <td data-label="Status"><span class="pill {% if member.payment_status == 'Paid' %}good{% elif member.payment_status == 'Frozen' %}warn{% endif %}">{{ member.payment_status }}</span></td>
-        <td data-label="Services">Workout: {{ member.workout_subscription or "Regular" }}<br>Diet: {{ member.diet_subscription or "None" }}</td>
+        <td data-label="Status">
+          <span class="pill {% if member.payment_status == 'Paid' %}good{% elif member.payment_status == 'Frozen' %}warn{% endif %}">{{ member.payment_status }}</span>
+        </td>
+        <td data-label="Services" style="font-size:13px; line-height:1.45;">
+          Workout: <span style="font-weight:700;">{{ member.workout_subscription or "Regular" }}</span><br>
+          Diet: <span style="font-weight:700;">{{ member.diet_subscription or "None" }}</span>
+        </td>
         <td data-label="Trainer">{{ member.trainer_name or "Unassigned" }}</td>
         <td data-label="Actions" class="actions-cell">
           {% if current_user.role == "admin" %}
-          <a href="{{ url_for('edit_member', member_id=member.id) }}">Edit</a>
-          <form method="post" action="{{ url_for('delete_member', member_id=member.id) }}">
-            <button class="link-button" type="submit">Remove</button>
+          <a class="button" style="padding:4px 8px; font-size:12px;" href="{{ url_for('edit_member', member_id=member.id) }}">Edit</a>
+          <form method="post" action="{{ url_for('delete_member', member_id=member.id) }}" style="margin:0;">
+            <button class="link-button" style="color:var(--brand-red); font-size:12px; font-weight:700;" type="submit" onclick="return confirm('Are you sure you want to permanently delete member {{ member.name }}? This action is destructive.');">Remove</button>
           </form>
           {% endif %}
         </td>

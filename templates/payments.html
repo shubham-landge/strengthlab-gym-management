@@ -1,61 +1,110 @@
 {% extends "base.html" %}
 {% block content %}
 <header class="page-header">
-  <div><p class="eyebrow">Finance</p><h1>Payments</h1></div>
+  <div>
+    <p class="eyebrow">Financial Dashboard</p>
+    <h1>Payments</h1>
+  </div>
   <div class="actions">
-    <a class="button primary" href="#payment-drawer">Add payment</a>
-    <a class="button" href="{{ url_for('export_payments_excel') }}">Export Excel</a>
-    <form method="post" action="{{ url_for('run_payment_reminders') }}">
-      <button class="button" type="submit">Run due reminders</button>
+    <a class="button primary" href="#payment-drawer">
+      <svg class="nav-icon" style="margin-right:2px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      <span>Add payment</span>
+    </a>
+    <a class="button" href="{{ url_for('export_payments_excel') }}">
+      <svg class="nav-icon" style="margin-right:2px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      <span>Export Excel</span>
+    </a>
+    <form method="post" action="{{ url_for('run_payment_reminders') }}" style="margin:0;">
+      <button class="button" type="submit">
+        <svg class="nav-icon" style="margin-right:2px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        <span>Run due reminders</span>
+      </button>
     </form>
   </div>
 </header>
 
 <section class="stats-grid">
-  <div class="stat"><span>MRR projection</span><strong>Rs {{ "%.0f"|format(finance.mrr) }}</strong><small>Current month collected + pending</small></div>
-  <div class="stat finance-gauge-card">
-    <span>Collected vs pending</span>
-    {% set total_flow = finance.current_month_collected + finance.current_month_pending %}
-    {% set collected_pct = ((finance.current_month_collected / total_flow) * 100) if total_flow else 0 %}
-    <strong>{{ "%.0f"|format(collected_pct) }}%</strong>
-    <div class="finance-gauge"><i style="width: {{ collected_pct }}%"></i></div>
+  <div class="stat">
+    <span>MRR projection</span>
+    <strong>Rs {{ "%.0f"|format(finance.mrr) }}</strong>
+    <small>Current month collected + pending</small>
+  </div>
+  <div class="stat finance-gauge-card" style="display:flex; flex-direction:column; justify-content:space-between;">
+    <div>
+      <span>Collected vs pending</span>
+      {% set total_flow = finance.current_month_collected + finance.current_month_pending %}
+      {% set collected_pct = ((finance.current_month_collected / total_flow) * 100) if total_flow else 0 %}
+      <strong>{{ "%.0f"|format(collected_pct) }}%</strong>
+      <div class="finance-gauge" style="margin: 8px 0;"><i style="width: {{ collected_pct }}%"></i></div>
+    </div>
     <small>Rs {{ "%.0f"|format(finance.current_month_collected) }} collected / Rs {{ "%.0f"|format(finance.current_month_pending) }} pending</small>
   </div>
-  <div class="stat"><span>Churn risk</span><strong>{{ finance.churn_risk }}</strong><small>Expired in past 48 hours</small></div>
-  <div class="stat"><span>Due in next {{ reminder_days }} days</span><strong>{{ due_count }}</strong><small>Auto-reminder scan</small></div>
+  <div class="stat">
+    <span>Churn risk</span>
+    <strong>{{ finance.churn_risk }}</strong>
+    <small>Expired in past 48 hours</small>
+  </div>
+  <div class="stat">
+    <span>Due in next {{ reminder_days }} days</span>
+    <strong>{{ due_count }}</strong>
+    <small>Auto-reminder scan queue</small>
+  </div>
 </section>
 
 {% if request.args.get("created") %}
 <div class="notice good">
-  Reminder scan completed: {{ request.args.get("created") }} new queued, {{ request.args.get("scanned") }} due records scanned.
+  Reminder scan completed: {{ request.args.get("created") }} new alerts queued, {{ request.args.get("scanned") }} total records scanned.
 </div>
 {% endif %}
 {% if request.args.get("batch") %}
-<div class="notice good">Batch action completed: {{ request.args.get("batch") }} record(s) updated.</div>
+<div class="notice good">Batch action completed: {{ request.args.get("batch") }} payment record(s) updated.</div>
 {% endif %}
 
 <section class="finance-visuals">
   <article class="panel chart-panel">
-    <div class="section-title"><h2>Revenue velocity</h2><small>Daily collections this month</small></div>
-    <svg class="line-chart" viewBox="0 0 300 140" role="img">
-      <polyline points="{% for point in charts.daily_points %}{{ point.x }},{{ point.y }} {% endfor %}" />
+    <div class="section-title">
+      <h2>Revenue velocity</h2>
+      <small>Daily collections this month</small>
+    </div>
+    <svg class="line-chart" viewBox="0 0 300 140" role="img" aria-label="Line chart showing revenue collections velocity">
+      <defs>
+        <linearGradient id="velocityGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.32" />
+          <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.0" />
+        </linearGradient>
+      </defs>
+      {% if charts.daily_points and charts.daily_points|length > 1 %}
+      <polygon points="{{ charts.daily_points[0].x }},130 {% for point in charts.daily_points %}{{ point.x }},{{ point.y }} {% endfor %} {{ charts.daily_points[-1].x }},130" fill="url(#velocityGrad)" />
+      <polyline points="{% for point in charts.daily_points %}{{ point.x }},{{ point.y }} {% endfor %}" fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
       {% for point in charts.daily_points %}
-      <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4"><title>{{ point.day }} · Rs {{ point.total }}</title></circle>
+      <circle cx="{{ point.x }}" cy="{{ point.y }}" r="3.5" fill="var(--panel)" stroke="var(--accent)" stroke-width="2">
+        <title>Day {{ point.day }}: Rs {{ point.total }}</title>
+      </circle>
       {% endfor %}
+      {% else %}
+      <text x="150" y="70" text-anchor="middle" fill="var(--muted)">No velocity data available.</text>
+      {% endif %}
     </svg>
   </article>
+  
   <article class="panel chart-panel">
-    <div class="section-title"><h2>Payment method split</h2><small>Cash flow settlement</small></div>
+    <div class="section-title">
+      <h2>Payment method split</h2>
+      <small>Cash flow settlement</small>
+    </div>
     <div class="method-bar">
       {% for item in charts.method_split %}
-      <i class="method-{{ item.method|lower|replace(' ', '-') }}" style="width: {{ item.percent }}%" title="{{ item.method }} {{ item.percent }}%"></i>
+      <i class="method-{{ item.method|lower|replace(' ', '-') }}" style="width: {{ item.percent }}%" title="{{ item.method }}: {{ item.percent }}%"></i>
       {% endfor %}
     </div>
-    <div class="method-legend">
+    <div class="method-legend" style="margin-top:20px;">
       {% for item in charts.method_split %}
-      <span><b></b>{{ item.method }} · {{ item.percent }}%</span>
+      <span style="display:inline-flex; align-items:center; gap:6px; font-size:12px; margin-right:12px;">
+        <b class="method-dot method-{{ item.method|lower|replace(' ', '-') }}" style="width:10px; height:10px; border-radius:999px; display:inline-block;"></b>
+        {{ item.method }} · {{ item.percent }}%
+      </span>
       {% else %}
-      <span>No collections yet</span>
+      <span>No collections logged yet.</span>
       {% endfor %}
     </div>
   </article>
@@ -65,58 +114,99 @@
   <a class="drawer-backdrop" href="#" aria-label="Close payment drawer"></a>
   <aside class="payment-drawer" aria-label="Add payment record">
     <div class="section-title">
-      <div><p class="eyebrow">Transaction entry</p><h2>Add payment record</h2></div>
+      <div>
+        <p class="eyebrow">Transaction entry</p>
+        <h2>Add payment record</h2>
+      </div>
       <a class="button" href="#">Close</a>
     </div>
     <p class="drawer-copy">Record a due or received payment, attach local settlement details, and queue the right WhatsApp receipt or reminder.</p>
     <form class="drawer-form" method="post">
-      <label>Member<select name="member_id" required>{% for member in members %}<option value="{{ member.id }}">{{ member.name }}</option>{% endfor %}</select></label>
+      <label>Member
+        <select name="member_id" required>
+          {% for member in members %}
+          <option value="{{ member.id }}">{{ member.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
       <div class="drawer-two">
         <label>Amount<input name="amount" type="number" step="0.01" placeholder="Amount" required></label>
         <label>Discount<input name="discount_amount" type="number" step="0.01" placeholder="Discount" value="0"></label>
       </div>
       <div class="drawer-two">
-        <label>Status<select name="status"><option>Due</option><option>Received</option></select></label>
-        <label>Method<select name="payment_method"><option value="">Payment method</option><option>Cash</option><option>UPI</option><option>Card</option><option>Bank Transfer</option></select></label>
+        <label>Status
+          <select name="status">
+            <option>Due</option>
+            <option>Received</option>
+          </select>
+        </label>
+        <label>Method
+          <select name="payment_method">
+            <option value="">Payment method</option>
+            <option>Cash</option>
+            <option>UPI</option>
+            <option>Card</option>
+            <option>Bank Transfer</option>
+          </select>
+        </label>
       </div>
       <label>UPI transaction ID<input name="upi_transaction_id" placeholder="Optional for UPI payments"></label>
       <div class="drawer-two">
         <label>Due date<input name="due_on" type="date"></label>
-        <label>Plan<select name="plan_name"><option>Monthly</option><option>Quarterly</option><option>Annual</option></select></label>
+        <label>Plan
+          <select name="plan_name">
+            <option>Monthly</option>
+            <option>Quarterly</option>
+            <option>Annual</option>
+          </select>
+        </label>
       </div>
       <div class="drawer-two">
         <label>Renewal start<input name="renewal_start" type="date"></label>
         <label>Renewal end<input name="renewal_end" type="date"></label>
       </div>
-      <label>Notes<input name="notes" placeholder="Counter note, receipt detail, or reminder context"></label>
-      <button class="button primary">Save and queue WhatsApp</button>
+      <label>Notes<input name="notes" placeholder="Counter notes, cashier reference, or reminder context"></label>
+      <button class="button primary" style="margin-top:10px;">Save and queue WhatsApp</button>
     </form>
   </aside>
 </section>
 
 <section class="panel">
-  <div class="section-title"><h2>Automated reminder queue</h2><a class="queue-live" href="{{ url_for('announcements') }}"><span></span>WhatsApp center</a></div>
+  <div class="section-title">
+    <h2>Automated reminder queue</h2>
+    <a class="queue-live" href="{{ url_for('announcements') }}">
+      <span></span>
+      <span>WhatsApp center</span>
+    </a>
+  </div>
   <form method="post" action="{{ url_for('payment_batch_action') }}">
     <div class="batch-actions">
-      <label class="check select-all"><input type="checkbox" data-select-all="notification_ids"> Select all queued</label>
+      <label class="check select-all" style="min-height:36px; padding: 6px 12px; border-radius:16px;">
+        <input type="checkbox" data-select-all="notification_ids"> 
+        <span>Select all queued</span>
+      </label>
       <button class="button" name="action" value="queue_reminders">Batch send reminders</button>
     </div>
-  <div class="stack">
-    {% for note in reminder_notifications %}
-    <div class="item-row">
-      <label class="row-check"><input type="checkbox" name="notification_ids" value="{{ note.id }}"></label>
-      <div><strong>{{ note.member_name }}</strong><small>{{ note.message }}</small><small>Status: {{ note.status }}</small></div>
-      <a target="_blank" href="{{ wa_link(note.phone, note.message) }}">Send</a>
+    <div class="stack" style="margin-top:12px;">
+      {% for note in reminder_notifications %}
+      <div class="item-row">
+        <label class="row-check"><input type="checkbox" name="notification_ids" value="{{ note.id }}"></label>
+        <div>
+          <strong>{{ note.member_name }}</strong>
+          <small>{{ note.message }}</small>
+          <small>Status: {{ note.status }}</small>
+        </div>
+        <a class="button" target="_blank" href="{{ wa_link(note.phone, note.message) }}">Send</a>
+      </div>
+      {% else %}
+      <p class="empty">No automated reminders queued yet.</p>
+      {% endfor %}
     </div>
-    {% else %}
-    <p class="empty">No automated reminders queued yet.</p>
-    {% endfor %}
-  </div>
   </form>
 </section>
 
 <section class="table-wrap">
-  <div class="section-title table-title"><h2>Payment history</h2><small>{{ payments|length }} result(s)</small></div>
+  <div class="section-title table-title"><h2>Payment history</h2><small>{{ payments|length }} record(s)</small></div>
   <form class="grid-form payment-filters table-title" method="get">
     <label>Member
       <select name="member_id">
@@ -141,30 +231,60 @@
     <button class="button primary" type="submit">Filter</button>
     <a class="button" href="{{ url_for('payments') }}">Clear</a>
   </form>
+  
   <form method="post" action="{{ url_for('payment_batch_action') }}">
-  <div class="batch-actions table-title">
-    <label class="check select-all"><input type="checkbox" data-select-all="payment_ids"> Select all payments</label>
-    <button class="button" name="action" value="queue_reminders">Batch send reminders</button>
-    <button class="button primary" name="action" value="mark_paid">Bulk mark as paid</button>
-  </div>
-  <table><thead><tr><th>Invoice</th><th>Member</th><th>Amount</th><th>Discount</th><th>Net</th><th>Status</th><th>Method</th><th>UPI ID</th><th>Date</th><th>Receipt</th><th>WhatsApp</th></tr></thead><tbody>
-  {% for payment in payments %}
-  {% set msg = 'Payment received. Thank you!' if payment.status == 'Received' else 'Payment reminder: your gym fee is due.' %}
-  <tr>
-    <td data-label="Invoice"><input type="checkbox" name="payment_ids" value="{{ payment.id }}"> {{ payment.invoice_number or "-" }}</td>
-    <td data-label="Member">{{ payment.member_name }}</td>
-    <td data-label="Amount">Rs {{ payment.amount }}</td>
-    <td data-label="Discount">Rs {{ payment.discount_amount or 0 }}</td>
-    <td data-label="Net">Rs {{ payment.net_amount or payment.amount }}</td>
-    <td data-label="Status"><span class="pill {{ 'good' if payment.status == 'Received' else 'warn' }}">{{ payment.status }}</span></td>
-    <td data-label="Method">{{ payment.payment_method or "-" }}</td>
-    <td data-label="UPI ID">{{ payment.upi_transaction_id or "-" }}</td>
-    <td data-label="Date">{{ payment.paid_on or payment.due_on }}</td>
-    <td data-label="Receipt"><a href="{{ url_for('payment_receipt_pdf', payment_id=payment.id) }}">PDF</a></td>
-    <td data-label="WhatsApp"><a target="_blank" href="{{ wa_link(payment.phone, msg) }}">Send</a></td>
-  </tr>
-  {% endfor %}
-  </tbody></table>
+    <div class="batch-actions table-title">
+      <label class="check select-all" style="min-height:36px; padding: 6px 12px; border-radius:16px;">
+        <input type="checkbox" data-select-all="payment_ids"> 
+        <span>Select all payments</span>
+      </label>
+      <button class="button" name="action" value="queue_reminders">Batch send reminders</button>
+      <button class="button primary" name="action" value="mark_paid">Bulk mark as paid</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Invoice</th>
+          <th>Member</th>
+          <th>Amount</th>
+          <th>Discount</th>
+          <th>Net</th>
+          <th>Status</th>
+          <th>Method</th>
+          <th>UPI ID</th>
+          <th>Date</th>
+          <th>Receipt</th>
+          <th>WhatsApp</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for payment in payments %}
+        {% set msg = 'Payment received. Thank you!' if payment.status == 'Received' else 'Payment reminder: your gym fee is due.' %}
+        <tr>
+          <td data-label="Invoice">
+            <input type="checkbox" name="payment_ids" value="{{ payment.id }}" style="margin-right:6px; vertical-align:middle;"> 
+            {{ payment.invoice_number or "-" }}
+          </td>
+          <td data-label="Member">{{ payment.member_name }}</td>
+          <td data-label="Amount">Rs {{ payment.amount }}</td>
+          <td data-label="Discount">Rs {{ payment.discount_amount or 0 }}</td>
+          <td data-label="Net"><strong>Rs {{ payment.net_amount or payment.amount }}</strong></td>
+          <td data-label="Status">
+            <span class="pill {{ 'good' if payment.status == 'Received' else 'warn' }}">{{ payment.status }}</span>
+          </td>
+          <td data-label="Method">{{ payment.payment_method or "-" }}</td>
+          <td data-label="UPI ID"><small style="font-family:monospace;">{{ payment.upi_transaction_id or "-" }}</small></td>
+          <td data-label="Date">{{ payment.paid_on or payment.due_on }}</td>
+          <td data-label="Receipt">
+            <a class="button" style="padding:4px 8px; font-size:11px;" href="{{ url_for('payment_receipt_pdf', payment_id=payment.id) }}">PDF</a>
+          </td>
+          <td data-label="WhatsApp">
+            <a class="button" style="padding:4px 8px; font-size:11px;" target="_blank" href="{{ wa_link(payment.phone, msg) }}">Send</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </form>
 </section>
 
@@ -172,17 +292,36 @@
   <div class="section-title"><h2>Plan renewal history</h2></div>
   <div class="table-wrap flat-table">
     <table>
-      <thead><tr><th>Member</th><th>Plan</th><th>Start</th><th>End</th><th>Amount</th><th>Discount</th><th>Method</th></tr></thead>
+      <thead>
+        <tr>
+          <th>Member</th>
+          <th>Plan</th>
+          <th>Start</th>
+          <th>End</th>
+          <th>Amount</th>
+          <th>Discount</th>
+          <th>Method</th>
+        </tr>
+      </thead>
       <tbody>
         {% for renewal in renewals %}
-        <tr><td>{{ renewal.member_name }}</td><td>{{ renewal.plan_name }}</td><td>{{ renewal.renewal_start }}</td><td>{{ renewal.renewal_end }}</td><td>Rs {{ renewal.amount }}</td><td>Rs {{ renewal.discount_amount or 0 }}</td><td>{{ renewal.payment_method }}</td></tr>
+        <tr>
+          <td data-label="Member">{{ renewal.member_name }}</td>
+          <td data-label="Plan">{{ renewal.plan_name }}</td>
+          <td data-label="Start">{{ renewal.renewal_start }}</td>
+          <td data-label="End">{{ renewal.renewal_end }}</td>
+          <td data-label="Amount">Rs {{ renewal.amount }}</td>
+          <td data-label="Discount">Rs {{ renewal.discount_amount or 0 }}</td>
+          <td data-label="Method">{{ renewal.payment_method }}</td>
+        </tr>
         {% else %}
-        <tr><td colspan="7">No renewal history yet.</td></tr>
+        <tr><td colspan="7" class="empty">No renewal history recorded yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
 </section>
+
 <script>
   document.querySelectorAll("[data-select-all]").forEach((toggle) => {
     toggle.addEventListener("change", () => {
@@ -190,6 +329,12 @@
       const fieldName = toggle.dataset.selectAll;
       form.querySelectorAll(`input[name="${fieldName}"]`).forEach((box) => {
         box.checked = toggle.checked;
+        // Trigger style highlight on closest parent check container if exists
+        const labelCheck = box.closest(".check");
+        if (labelCheck) {
+          if (box.checked) labelCheck.style.borderColor = "var(--accent)";
+          else labelCheck.style.borderColor = "var(--line)";
+        }
       });
     });
   });

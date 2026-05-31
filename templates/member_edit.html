@@ -2,18 +2,29 @@
 {% block content %}
 <header class="page-header">
   <div>
-    <p class="eyebrow">Admin</p>
+    <p class="eyebrow">Admin Console</p>
     <h1>Edit {{ member.name }}</h1>
   </div>
   <div class="actions">
-    <a class="button" href="{{ url_for('member_detail', member_id=member.id) }}">Back to profile</a>
-    <a class="button" href="{{ url_for('diet_pdf', member_id=member.id) }}">Diet PDF</a>
+    <a class="button" href="{{ url_for('member_detail', member_id=member.id) }}">
+      <svg class="nav-icon" style="margin-right:2px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      <span>Back to profile</span>
+    </a>
+    <a class="button" href="{{ url_for('diet_pdf', member_id=member.id) }}">
+      <svg class="nav-icon" style="margin-right:2px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <span>Diet PDF</span>
+    </a>
   </div>
 </header>
 
-<form method="post" class="edit-layout">
+<form method="post" class="edit-layout" style="display:grid; gap:22px;">
   <section class="panel">
-    <div class="section-title"><h2>Personal details</h2></div>
+    <div class="section-title">
+      <h2 style="display:flex; align-items:center; gap:8px;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <span>Personal details</span>
+      </h2>
+    </div>
     <div class="grid-form">
       <label>Full name<input name="name" value="{{ member.name }}" required></label>
       <label>WhatsApp phone<input name="phone" value="{{ member.phone }}" required></label>
@@ -33,7 +44,12 @@
   </section>
 
   <section class="panel">
-    <div class="section-title"><h2>Health and fitness</h2></div>
+    <div class="section-title">
+      <h2 style="display:flex; align-items:center; gap:8px;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        <span>Health and fitness</span>
+      </h2>
+    </div>
     <div class="grid-form">
       <label>Height cm<input name="height_cm" type="number" step="0.1" value="{{ member.height_cm or '' }}"></label>
       <label>Weight kg<input name="weight_kg" type="number" step="0.1" value="{{ member.weight_kg or '' }}"></label>
@@ -52,7 +68,12 @@
   </section>
 
   <section class="panel">
-    <div class="section-title"><h2>Membership</h2></div>
+    <div class="section-title">
+      <h2 style="display:flex; align-items:center; gap:8px;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        <span>Membership & Service Tier</span>
+      </h2>
+    </div>
     <div class="grid-form">
       <label>Plan
         <select name="plan_name">
@@ -81,14 +102,14 @@
     </div>
     <div class="service-grid">
       <div class="form-block">
-        <h3>Workout service</h3>
+        <h3 style="color:var(--accent);">Workout service</h3>
         <div class="choice-grid compact-choice">
           <label class="radio-card"><input type="radio" name="workout_subscription" value="Regular" {% if (member.workout_subscription or "Regular") == "Regular" %}checked{% endif %}> Regular built-in plan</label>
           <label class="radio-card"><input type="radio" name="workout_subscription" value="Premium" {% if member.workout_subscription == "Premium" or member.premium %}checked{% endif %}> Premium AI-assisted plan</label>
         </div>
       </div>
       <div class="form-block">
-        <h3>Diet service</h3>
+        <h3 style="color:var(--accent);">Diet service</h3>
         <div class="choice-grid compact-choice">
           <label class="radio-card"><input type="radio" name="diet_subscription" value="None" {% if (member.diet_subscription or "None") == "None" and not member.premium %}checked{% endif %}> No diet plan</label>
           <label class="radio-card"><input type="radio" name="diet_subscription" value="Regular" {% if member.diet_subscription == "Regular" %}checked{% endif %}> Regular built-in diet</label>
@@ -99,15 +120,22 @@
   </section>
 
   <section class="panel">
-    <div class="section-title"><h2>Workout and diet plans</h2></div>
+    <div class="section-title">
+      <h2 style="display:flex; align-items:center; gap:8px;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        <span>Workout and diet blueprints</span>
+      </h2>
+    </div>
+    
     <div class="notice {{ 'good' if ai_enabled else 'warn' }}">
       {% if ai_enabled %}
-      AI generation is enabled: {{ ai_model_summary }}. Regeneration will try each configured provider, model, and key before falling back locally.
+      <strong>AI Generation Active:</strong> Using provider model {{ ai_model_summary }}. Draft generator will perform allergen, injury, and local equipment validations before generating content.
       {% else %}
-      AI generation is not configured. Add OPENAI_API_KEY or GEMINI_API_KEY; regeneration will use the local fallback until then.
+      <strong>AI Generation Inactive:</strong> No keys found in environment. Local rule-based generators will be used as fallback on draft trigger.
       {% endif %}
     </div>
-    <div class="form-block">
+
+    <div class="form-block" style="margin-bottom:20px;">
       <h3>Clickable plan customizations</h3>
       <div class="checkbox-grid">
         {% for option in [
@@ -125,37 +153,59 @@
         <label class="check"><input type="checkbox" name="customizations" value="{{ option }}" {% if selected_customizations and option in selected_customizations %}checked{% endif %}> {{ option }}</label>
         {% endfor %}
       </div>
-      <div class="plan-draft-actions">
-        <button class="button" formaction="{{ url_for('generate_member_plan_draft', member_id=member.id) }}" name="plan_type" value="workout" formmethod="post">Generate workout draft</button>
-        <button class="button" formaction="{{ url_for('generate_member_plan_draft', member_id=member.id) }}" name="plan_type" value="diet" formmethod="post">Generate diet draft</button>
+      <div class="plan-draft-actions" style="margin-top:14px;">
+        <button class="button" formaction="{{ url_for('generate_member_plan_draft', member_id=member.id) }}" name="plan_type" value="workout" formmethod="post">
+          <svg class="nav-icon" style="margin-right:2px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          Generate workout draft
+        </button>
+        <button class="button" formaction="{{ url_for('generate_member_plan_draft', member_id=member.id) }}" name="plan_type" value="diet" formmethod="post">
+          <svg class="nav-icon" style="margin-right:2px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>
+          Generate diet draft
+        </button>
       </div>
     </div>
+
     {% if draft_workout_plan or draft_diet_plan %}
-    <div class="plan-draft-review">
-      {% if draft_workout_plan %}
-      <div class="notice good">Workout draft generated. Review it, customize if needed, then copy it into the final workout plan before saving.</div>
-      <label>Workout draft<textarea id="workout-draft" rows="12" readonly>{{ draft_workout_plan }}</textarea></label>
-      <button class="button" type="button" data-copy-plan="workout">Use workout draft</button>
-      {% endif %}
-      {% if draft_diet_plan %}
-      <div class="notice good">Diet draft generated. Review it, customize if needed, then copy it into the final diet plan before saving.</div>
-      <label>Diet draft<textarea id="diet-draft" rows="12" readonly>{{ draft_diet_plan }}</textarea></label>
-      <button class="button" type="button" data-copy-plan="diet">Use diet draft</button>
-      {% endif %}
+    <div class="panel" style="border-color: var(--accent); background: var(--panel-2); margin-bottom: 20px;">
+      <h3>Generated drafts review</h3>
+      <div class="two-col" style="margin-bottom:0;">
+        {% if draft_workout_plan %}
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <div class="notice good" style="margin-bottom:6px;">Workout draft ready. Click below to copy it into the active editor.</div>
+          <label>Workout draft<textarea id="workout-draft" rows="10" readonly style="background:var(--input-muted); font-family:monospace; font-size:13px;">{{ draft_workout_plan }}</textarea></label>
+          <button class="button primary" type="button" data-copy-plan="workout" style="width:100%;">Use workout draft &rarr;</button>
+        </div>
+        {% endif %}
+        
+        {% if draft_diet_plan %}
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <div class="notice good" style="margin-bottom:6px;">Diet draft ready. Click below to copy it into the active editor.</div>
+          <label>Diet draft<textarea id="diet-draft" rows="10" readonly style="background:var(--input-muted); font-family:monospace; font-size:13px;">{{ draft_diet_plan }}</textarea></label>
+          <button class="button primary" type="button" data-copy-plan="diet" style="width:100%;">Use diet draft &rarr;</button>
+        </div>
+        {% endif %}
+      </div>
     </div>
     {% endif %}
+
     <div class="two-col edit-plans">
-      <label>Final workout plan<textarea id="workout-plan" name="workout_plan" rows="14">{{ member.workout_plan or '' }}</textarea></label>
-      <label>Final diet plan<textarea id="diet-plan" name="diet_plan" rows="14">{{ member.diet_plan or '' }}</textarea></label>
+      <label>Final active workout plan<textarea id="workout-plan" name="workout_plan" rows="14" style="font-family:monospace; font-size:13px;">{{ member.workout_plan or '' }}</textarea></label>
+      <label>Final active diet plan<textarea id="diet-plan" name="diet_plan" rows="14" style="font-family:monospace; font-size:13px;">{{ member.diet_plan or '' }}</textarea></label>
     </div>
-    <div class="form-options">
-      <label class="check"><input type="checkbox" name="regenerate_plans"> Regenerate final plans using subscription rules on save</label>
-      <label class="check"><input type="checkbox" name="send_profile_update"> Queue WhatsApp profile update</label>
+    
+    <div class="form-options" style="margin-top:14px; display:flex; flex-wrap:wrap; gap:20px; border-top: 1px solid var(--line); padding-top:14px;">
+      <label class="check"><input type="checkbox" name="regenerate_plans"> Force regenerate final plans using subscription rules on save</label>
+      <label class="check"><input type="checkbox" name="send_profile_update"> Queue WhatsApp profile update confirmation</label>
     </div>
   </section>
 
   <section class="panel">
-    <div class="section-title"><h2>Member login</h2></div>
+    <div class="section-title">
+      <h2 style="display:flex; align-items:center; gap:8px;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <span>Member credentials</span>
+      </h2>
+    </div>
     <div class="grid-form">
       <div class="readonly-field">
         <span>Username</span>
@@ -174,17 +224,27 @@
   </section>
 
   <div class="sticky-actions">
-    <button class="button primary" type="submit">Save member</button>
-    <a class="button" href="{{ url_for('member_detail', member_id=member.id) }}">Cancel</a>
+    <button class="button primary" type="submit" style="padding: 12px 28px; font-size:15px;">Save changes</button>
+    <a class="button" href="{{ url_for('member_detail', member_id=member.id) }}" style="padding: 12px 24px; font-size:15px;">Cancel</a>
   </div>
 </form>
+
 <script>
   document.querySelectorAll("[data-copy-plan]").forEach((button) => {
     button.addEventListener("click", () => {
       const type = button.dataset.copyPlan;
       const source = document.getElementById(`${type}-draft`);
       const target = document.getElementById(`${type}-plan`);
-      if (source && target) target.value = source.value;
+      if (source && target) {
+        target.value = source.value;
+        // Trigger a visual feedback highlight on target
+        target.style.borderColor = "var(--accent)";
+        target.style.boxShadow = "var(--glow)";
+        setTimeout(() => {
+          target.style.borderColor = "var(--line)";
+          target.style.boxShadow = "none";
+        }, 1200);
+      }
     });
   });
 </script>

@@ -1512,12 +1512,43 @@ def ai_plan_prompt(member, customizations=None, plan_type="both"):
     }
 
 
-def validate_ai_plan_data(data):
-    workout_plan = data.get("workout_plan", "").strip()
-    diet_plan = data.get("diet_plan", "").strip()
-    safety_notes = data.get("safety_notes", "").strip()
-    progress_message = data.get("progress_message", "").strip()
-    if not workout_plan or not diet_plan:
+def _as_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        return "\n".join(_as_text(item) for item in value if _as_text(item)).strip()
+    if isinstance(value, dict):
+        # Handle structured model outputs without failing on .strip()
+        for key in ("text", "content", "plan", "summary", "value"):
+            if key in value and value[key] is not None:
+                nested = _as_text(value[key])
+                if nested:
+                    return nested
+        try:
+            return json.dumps(value, ensure_ascii=True)
+        except Exception:
+            return str(value).strip()
+    return str(value).strip()
+
+
+def validate_ai_plan_data(data, plan_type="both"):
+    workout_plan = _as_text(data.get("workout_plan", ""))
+    diet_plan = _as_text(data.get("diet_plan", ""))
+    safety_notes = _as_text(data.get("safety_notes", ""))
+    progress_message = _as_text(data.get("progress_message", ""))
+    if plan_type == "workout":
+        if not workout_plan:
+            return None
+        if not diet_plan:
+            diet_plan = "No diet plan subscription is active for this member."
+    elif plan_type == "diet":
+        if not diet_plan:
+            return None
+        if not workout_plan:
+            workout_plan = "Workout plan unchanged."
+    elif not workout_plan or not diet_plan:
         return None
     if safety_notes:
         workout_plan = f"{workout_plan}\n\nSafety notes: {safety_notes}"
@@ -1545,7 +1576,7 @@ def generate_openai_plans(member, api_key, model, customizations=None, plan_type
             {"role": "user", "content": json.dumps(ai_plan_prompt(member, customizations, plan_type))},
         ],
     )
-    return validate_ai_plan_data(parse_ai_json(response.output_text))
+    return validate_ai_plan_data(parse_ai_json(response.output_text), plan_type=plan_type)
 
 
 def generate_gemini_plans(member, api_key, model, customizations=None, plan_type="both"):
@@ -1588,7 +1619,7 @@ def generate_gemini_plans(member, api_key, model, customizations=None, plan_type
         .get("parts", [{}])[0]
         .get("text", "")
     )
-    return validate_ai_plan_data(parse_ai_json(text))
+    return validate_ai_plan_data(parse_ai_json(text), plan_type=plan_type)
 
 
 def generate_ai_plans(member, customizations=None, plan_type="both"):
