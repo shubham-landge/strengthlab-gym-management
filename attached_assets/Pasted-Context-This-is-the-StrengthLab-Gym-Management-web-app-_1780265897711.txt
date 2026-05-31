@@ -1,0 +1,166 @@
+Context:
+This is the StrengthLab Gym Management web app, a Flask + Jinja2 + SQLite gym management system for local gym owners, trainers, accountants, and members.
+
+The app helps manage:
+- members
+- payments
+- attendance
+- workout plans
+- diet plans
+- trainers
+- WhatsApp reminders
+- PDF exports
+- admin/owner dashboards
+- member dashboards
+
+The current goal is not to rebuild the backend. The goal is to test the existing UI, find what looks bad, what is misaligned, what feels outdated, and improve the frontend carefully without exceeding Replit free-tier usage.
+
+Work in economy mode / minimal agent usage. Do not run long autonomous loops. Do not redesign the whole app at once. First inspect, then propose a short plan, then improve only the most important UI issues.
+
+Visual Direction:
+Create a modern gym SaaS dashboard UI.
+
+The design should feel:
+- premium
+- clean
+- practical
+- mobile-friendly
+- dashboard-focused
+- trainer/owner friendly
+- modern SaaS, not generic admin panel
+- fitness command-center style
+- trendy but readable
+
+Use:
+- clean card layouts
+- bento-style dashboard sections
+- clear spacing
+- better visual hierarchy
+- modern buttons
+- status badges
+- compact forms
+- responsive tables
+- mobile card views
+- clean navigation
+- good alignment
+- consistent typography
+- subtle hover states
+- modern empty states
+
+Do not use color codes.
+Do not overuse neon.
+Do not make the UI decorative at the cost of readability.
+Do not replace Flask/Jinja with React.
+Do not add heavy UI libraries unless absolutely necessary.
+
+Scope:
+First inspect the current UI and identify visual problems:
+- bad alignment
+- inconsistent spacing
+- oversized forms
+- broken mobile layout
+- ugly tables
+- weak dashboards
+- unclear buttons
+- poor typography hierarchy
+- inconsistent cards
+- confusing navigation
+- forms that look too raw
+- sections that should be grouped better
+
+Then improve these screens only if they exist in the project:
+
+1. Base Layout / Navigation
+- improve main shell
+- improve sidebar or top navigation
+- add mobile-friendly navigation if missing
+- keep existing route links intact
+
+2. Admin / Owner Dashboard
+- improve KPI cards
+- improve dashboard hierarchy
+- make revenue/payment/member stats more readable
+- use bento-style sections
+- add chart placeholders only if real chart data is missing
+
+3. Member Detail / Member Dashboard
+- show membership status clearly
+- show renewal/payment status clearly
+- improve workout/diet plan blocks
+- improve PDF download buttons
+- improve attendance/progress sections
+
+4. Payments Page
+- improve payment history table
+- convert statuses into badges
+- improve due/received visibility
+- make payment actions clearer
+- make large forms less visually overwhelming
+- use modal/drawer only if it can be done safely without backend changes
+
+5. Workout / Diet Plan Pages
+- improve generated plan readability
+- workout days should look like structured cards
+- exercises should show sets, reps, RPE/rest clearly
+- diet meals should look like recipe cards
+- PDF export buttons should be easy to find
+
+6. Mobile Responsiveness
+- fix obvious mobile layout problems
+- tables should become stacked cards on mobile where possible
+- buttons should be easy to tap
+- no horizontal overflow
+
+Data & Navigation:
+Use the app’s existing Flask/Jinja data. Preserve all:
+- Jinja variables
+- Jinja loops
+- Jinja conditionals
+- form actions
+- route names
+- endpoint names
+- CSRF fields if present
+- existing backend behavior
+
+If sample data is needed, use safe placeholder text only in templates where existing data is missing. Do not invent backend variables that will break Jinja.
+
+Use responsive behavior:
+- desktop: sidebar/dashboard/table layout
+- tablet: compact cards and grids
+- mobile: stacked cards, bottom-friendly actions, no wide tables
+
+Free-Tier Safety Rules:
+- Do not run long background tasks.
+- Do not install large dependencies.
+- Do not create a new framework.
+- Do not migrate the database.
+- Do not rewrite app.py unless a tiny route-safe change is required.
+- Do not start multiple agents.
+- Do not deploy automatically unless I ask.
+- Make one focused UI improvement pass.
+- Stop after completing the main UI pass and summarize what was changed.
+
+Technical Rules:
+- Keep the app Flask + Jinja.
+- Prefer editing templates and static files.
+- Keep backend changes minimal.
+- Run only lightweight checks:
+  python -m py_compile app.py
+- If possible, start the app and visually inspect main pages.
+- Update FUNCTIONALITY_UPGRADE_LOG.md with UI changes.
+- Do not commit or push unless I explicitly approve.
+
+Output Required:
+Before editing:
+1. Briefly list the worst UI problems found.
+2. List the exact files you plan to edit.
+3. Ask for confirmation if the change would be large.
+
+After editing:
+1. Changed files
+2. UI improvements made
+3. Screens improved
+4. Checks run
+5. Remaining UI issues
+6. Mobile risks
+7. Confirmation that no git commit or push was executed
