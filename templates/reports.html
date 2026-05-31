@@ -1,12 +1,114 @@
 {% extends "base.html" %}
 {% block content %}
-<header class="page-header"><div><p class="eyebrow">Analytics</p><h1>Reports</h1></div></header>
-<section class="stats-grid">
-  <div class="stat"><span>Revenue this month</span><strong>Rs {{ "%.2f"|format(monthly_revenue) }}</strong></div>
-  <div class="stat"><span>Outstanding dues</span><strong>Rs {{ "%.2f"|format(due_total) }}</strong></div>
+<header class="page-header">
+  <div><p class="eyebrow">Analytics</p><h1>Reports</h1></div>
+  <div class="actions">
+    <a class="button" href="{{ url_for('export_payments_excel') }}">Export Excel</a>
+    <a class="button" href="{{ url_for('payments') }}">Open finance</a>
+  </div>
+</header>
+
+<section class="bento-grid">
+  <article class="stat bento-span-3"><span>Monthly collections</span><strong>Rs {{ "%.0f"|format(monthly_revenue) }}</strong><small>Received payments this month</small></article>
+  <article class="stat bento-span-3"><span>Outstanding dues</span><strong>Rs {{ "%.0f"|format(due_total) }}</strong><small>{{ watch.unpaid_members }} unpaid members</small></article>
+  <article class="stat bento-span-3"><span>Expiring in 14 days</span><strong>{{ watch.expiring_7 + watch.expiring_14 }}</strong><small>{{ watch.expiring_7 }} need action this week</small></article>
+  <article class="stat bento-span-3"><span>Member status</span><strong>{{ watch.active_members }}</strong><small>{{ watch.expired_members }} expired, {{ watch.frozen_members }} frozen</small></article>
+
+  <article class="panel chart-panel bento-span-7">
+    <div class="section-title"><h2>Revenue velocity</h2><small>Daily collections this month</small></div>
+    <svg class="line-chart" viewBox="0 0 300 140" role="img">
+      <polyline points="{% for point in charts.daily_points %}{{ point.x }},{{ point.y }} {% endfor %}" />
+      {% for point in charts.daily_points %}
+      <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4"><title>{{ point.day }} Rs {{ point.total }}</title></circle>
+      {% endfor %}
+    </svg>
+  </article>
+  <article class="panel bento-span-5">
+    <div class="section-title"><h2>Payment split</h2><small>Cash, UPI, card, bank</small></div>
+    <div class="method-bar">
+      {% for item in charts.method_split %}
+      <i class="method-{{ item.method|lower|replace(' ', '-') }}" style="width: {{ item.percent }}%" title="{{ item.method }} {{ item.percent }}%"></i>
+      {% endfor %}
+    </div>
+    <div class="method-legend">
+      {% for item in charts.method_split %}
+      <span><b></b>{{ item.method }} | {{ item.percent }}%</span>
+      {% else %}
+      <span>No collections yet</span>
+      {% endfor %}
+    </div>
+  </article>
 </section>
+
 <section class="two-col">
-  <div class="panel"><h2>Attendance trend</h2>{% for row in attendance_by_day %}<div class="bar-row"><span>{{ row.day }}</span><div><i style="width: {{ [row.visits * 12, 100]|min }}%"></i></div><b>{{ row.visits }}</b></div>{% else %}<p class="empty">No attendance yet.</p>{% endfor %}</div>
-  <div class="panel"><h2>Subscription watch</h2>{% for member in active_members %}<div class="item-row"><span>{{ member.name }}</span><small>{{ member.subscription_end }} · {{ member.payment_status }}</small></div>{% endfor %}</div>
+  <div class="panel">
+    <div class="section-title"><h2>Attendance velocity</h2><small>Last 14 days</small></div>
+    {% for row in attendance_by_day %}
+    <div class="bar-row"><span>{{ row.day }}</span><div><i style="width: {{ [row.visits * 12, 100]|min }}%"></i></div><b>{{ row.visits }}</b></div>
+    {% else %}
+    <p class="empty">No attendance yet.</p>
+    {% endfor %}
+  </div>
+  <div class="panel">
+    <div class="section-title"><h2>Subscription watch</h2><small>Earliest renewals first</small></div>
+    <div class="stack">
+      {% for member in active_members[:12] %}
+      <div class="item-row"><div><strong>{{ member.name }}</strong><small>{{ member.phone }}</small></div><span class="pill {% if member.payment_status != 'Paid' %}warn{% else %}good{% endif %}">{{ member.subscription_end or "-" }} | {{ member.payment_status }}</span></div>
+      {% else %}
+      <p class="empty">No member records yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="two-col">
+  <div class="panel">
+    <div class="section-title"><h2>Active freeze holds</h2><small>Member pauses that need owner visibility</small></div>
+    <div class="stack">
+      {% for freeze in freeze_watch.active %}
+      <div class="item-row">
+        <div><strong>{{ freeze.member_name }}</strong><small>{{ freeze.frozen_on }} | {{ freeze.reason or "No reason" }}</small></div>
+        <a href="{{ url_for('member_detail', member_id=freeze.member_id) }}">Open profile</a>
+      </div>
+      {% else %}
+      <p class="empty">No active freeze holds.</p>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="panel">
+    <div class="section-title"><h2>Freeze audit</h2><small>{{ freeze_watch.total_days }} total frozen days closed</small></div>
+    <div class="stack">
+      {% for freeze in freeze_watch.recent %}
+      <div class="item-row">
+        <div><strong>{{ freeze.member_name }}</strong><small>{{ freeze.frozen_on }} to {{ freeze.unfrozen_on }} | expiry {{ freeze.expiry_after or freeze.subscription_end or "-" }}</small></div>
+        <span class="pill good">{{ freeze.days_frozen }} days</span>
+      </div>
+      {% else %}
+      <p class="empty">No completed freeze periods yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="section-title"><h2>Unpaid collection queue</h2><a href="{{ url_for('payments') }}">Open payment actions</a></div>
+  <div class="table-wrap flat-table">
+    <table>
+      <thead><tr><th>Member</th><th>Phone</th><th>Renewal date</th><th>Status</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for member in unpaid_members %}
+        <tr>
+          <td>{{ member.name }}</td>
+          <td>{{ member.phone }}</td>
+          <td>{{ member.subscription_end or "-" }}</td>
+          <td><span class="pill warn">{{ member.payment_status }}</span></td>
+          <td><a href="{{ url_for('member_detail', member_id=member.id) }}">Open profile</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5">No unpaid members found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </section>
 {% endblock %}

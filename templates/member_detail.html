@@ -6,7 +6,7 @@
     {% if current_user.role == "admin" %}
     <a class="button" href="{{ url_for('edit_member', member_id=member.id) }}">Edit profile</a>
     {% endif %}
-    <a class="button" href="{{ url_for('diet_pdf', member_id=member.id) }}">Download diet PDF</a>
+    <a class="button" href="{{ url_for('diet_pdf', member_id=member.id) }}">Download blueprint PDF</a>
     {% if current_user.role in ["admin", "trainer"] %}
     <a class="button primary" target="_blank" href="{{ wa_link(member.phone, 'Hi ' ~ member.name ~ ', your progress update and diet plan are ready. Please check your PDF from the gym desk.') }}">WhatsApp update</a>
     {% endif %}
@@ -39,6 +39,29 @@
     </strong>
     <small>{{ member.subscription_end or "No renewal date" }}</small>
   </div>
+</section>
+
+<section class="athlete-grid">
+  <article class="athlete-card">
+    <span>Attendance streak</span>
+    <strong>{{ dashboard_metrics.attendance_streak }} days</strong>
+    <small>Current training rhythm</small>
+  </article>
+  <article class="athlete-card">
+    <span>Membership tier</span>
+    <strong>{{ member.workout_subscription or "Regular" }}</strong>
+    <small>{{ member.plan_name }} | {{ member.payment_status }}</small>
+  </article>
+  <article class="athlete-card">
+    <span>Latest weight</span>
+    <strong>{{ dashboard_metrics.latest_weight or "N/A" }}</strong>
+    <small>kg from profile/progress</small>
+  </article>
+  <article class="athlete-card">
+    <span>Protein target</span>
+    <strong>{{ dashboard_metrics.protein }}g</strong>
+    <small>{{ dashboard_metrics.calories }} kcal daily target</small>
+  </article>
 </section>
 
 <section class="today-grid">
@@ -75,6 +98,27 @@
   </article>
 </section>
 
+<section class="two-col">
+  <article class="panel">
+    <div class="section-title"><h2>Nutrition targets</h2><small>Estimated from current profile</small></div>
+    <div class="macro-grid">
+      <div><span>Calories</span><strong>{{ dashboard_metrics.calories }}</strong><small>kcal</small></div>
+      <div><span>Protein</span><strong>{{ dashboard_metrics.protein }}</strong><small>g</small></div>
+      <div><span>Carbs</span><strong>{{ dashboard_metrics.carbs }}</strong><small>g</small></div>
+      <div><span>Fat</span><strong>{{ dashboard_metrics.fat }}</strong><small>g</small></div>
+    </div>
+  </article>
+  <article class="panel trainer-note-card">
+    <div class="section-title"><h2>Trainer note</h2><small>Latest progress comment</small></div>
+    <p>{{ dashboard_metrics.latest_trainer_note or "No trainer note recorded yet." }}</p>
+    <div class="hero-tags">
+      <span>Completion {{ dashboard_metrics.latest_completion if dashboard_metrics.latest_completion is not none else 0 }}%</span>
+      <span>Energy {{ dashboard_metrics.latest_energy or "N/A" }}</span>
+      <span>{{ dashboard_metrics.latest_payment_status }}</span>
+    </div>
+  </article>
+</section>
+
 <section class="panel">
   <div class="section-title"><h2>Workout completion history</h2></div>
   <div class="history-strip">
@@ -93,7 +137,7 @@
 
 <section class="stats-grid">
   <div class="stat"><span>Membership</span><strong>{{ member.plan_name }}</strong></div>
-  <div class="stat"><span>Payment</span><strong>{{ member.payment_status }}</strong></div>
+  <div class="stat"><span>Payment</span><strong><span class="pill {% if member.payment_status == 'Paid' %}good{% else %}warn{% endif %}">{{ member.payment_status }}</span></strong></div>
   <div class="stat"><span>Workout service</span><strong>{{ member.workout_subscription or "Regular" }}</strong></div>
   <div class="stat"><span>Diet service</span><strong>{{ member.diet_subscription or "None" }}</strong></div>
   <div class="stat"><span>BMI</span><strong>{{ bmi or "N/A" }}</strong></div>
@@ -106,6 +150,8 @@
   <a href="{{ url_for('payment_receipt_pdf', payment_id=request.args.get('payment_id')) }}">Open receipt PDF</a>
 </div>
 {% endif %}
+{% if request.args.get("frozen") %}<div class="notice warn">Membership frozen and member notification queued.</div>{% endif %}
+{% if request.args.get("unfrozen") %}<div class="notice good">Membership reactivated and member notification queued.</div>{% endif %}
 
 {% if current_user.role in ["admin", "owner", "accountant"] %}
 <section class="panel renewal-panel">
@@ -137,6 +183,40 @@
     <label class="check field-check"><input type="checkbox" name="send_whatsapp_receipt" checked> Queue WhatsApp receipt</label>
     <button class="button primary" type="submit">Renew membership</button>
   </form>
+</section>
+{% endif %}
+
+{% if current_user.role in ["admin", "owner"] %}
+<section class="panel">
+  <div class="section-title">
+    <h2>Membership control</h2>
+    <small>Freeze for holds, travel, medical pauses, or owner-approved exceptions.</small>
+  </div>
+  {% if member.payment_status == "Frozen" %}
+  <form class="inline-form" method="post" action="{{ url_for('unfreeze_member', member_id=member.id) }}">
+    <span class="pill warn">Currently frozen</span>
+    <label class="check"><input type="checkbox" name="extend_expiry" checked> Extend expiry by frozen days</label>
+    <button class="button primary" type="submit">Unfreeze membership</button>
+  </form>
+  {% else %}
+  <form class="grid-form compact" method="post" action="{{ url_for('freeze_member', member_id=member.id) }}">
+    <label class="span-3">Freeze reason<input name="freeze_reason" placeholder="Travel, medical pause, payment hold, owner exception"></label>
+    <button class="button" type="submit">Freeze membership</button>
+  </form>
+  {% endif %}
+  <div class="freeze-history">
+    {% for row in freeze_history %}
+    <div class="item-row">
+      <div>
+        <strong>{{ row.frozen_on }}{% if row.unfrozen_on %} to {{ row.unfrozen_on }}{% else %} to active{% endif %}</strong>
+        <small>{{ row.reason or "No reason recorded" }}</small>
+      </div>
+      <span class="pill {% if row.unfrozen_on %}good{% else %}warn{% endif %}">{{ row.days_frozen or "Active" }}{% if row.days_frozen %} days{% endif %}</span>
+    </div>
+    {% else %}
+    <p class="empty">No freeze history yet.</p>
+    {% endfor %}
+  </div>
 </section>
 {% endif %}
 
@@ -374,7 +454,7 @@
 <section class="two-col">
   <div class="panel">
     <h2>Payments</h2>
-    {% for payment in payments %}<div class="item-row"><span>Rs {{ payment.amount }} · {{ payment.status }}</span><small>{{ payment.paid_on or payment.due_on }}</small></div>{% else %}<p class="empty">No payment records.</p>{% endfor %}
+    {% for payment in payments %}<div class="item-row"><span>Rs {{ payment.amount }} · <span class="pill {{ 'good' if payment.status == 'Received' else 'warn' }}">{{ payment.status }}</span></span><small>{{ payment.paid_on or payment.due_on }}</small></div>{% else %}<p class="empty">No payment records.</p>{% endfor %}
   </div>
   <div class="panel">
     <h2>Notification log</h2>

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -15,28 +15,29 @@
         <small>LAN dashboard</small>
       </div>
     </div>
-    <nav>
-      <a href="{{ url_for('index') }}">Dashboard</a>
+    <nav class="side-nav">
+      <a href="{{ url_for('index') }}" {% if request.endpoint == "index" %}class="active"{% endif %}>Dashboard</a>
       {% if current_user.role == "owner" %}
-      <a href="{{ url_for('owner_dashboard') }}">Owner</a>
+      <a href="{{ url_for('owner_dashboard') }}" {% if request.endpoint == "owner_dashboard" %}class="active"{% endif %}>Owner</a>
       {% endif %}
       {% if current_user.role == "accountant" %}
-      <a href="{{ url_for('accountant_dashboard') }}">Accounting</a>
+      <a href="{{ url_for('accountant_dashboard') }}" {% if request.endpoint == "accountant_dashboard" %}class="active"{% endif %}>Accounting</a>
       {% endif %}
       {% if current_user.role in ["admin", "owner", "trainer"] %}
-      <a href="{{ url_for('members') }}">Members</a>
-      <a href="{{ url_for('trainer_assignments') }}">Assignments</a>
-      <a href="{{ url_for('attendance') }}">Attendance</a>
+      <a href="{{ url_for('members') }}" {% if request.endpoint in ["members", "member_detail", "edit_member"] %}class="active"{% endif %}>Members</a>
+      <a href="{{ url_for('trainer_assignments') }}" {% if request.endpoint == "trainer_assignments" %}class="active"{% endif %}>Assignments</a>
+      <a href="{{ url_for('attendance') }}" {% if request.endpoint == "attendance" %}class="active"{% endif %}>Attendance</a>
       {% endif %}
       {% if current_user.role in ["admin", "owner", "accountant"] %}
-      <a href="{{ url_for('payments') }}">Payments</a>
-      <a href="{{ url_for('reports') }}">Reports</a>
+      <a href="{{ url_for('payments') }}" {% if request.endpoint == "payments" %}class="active"{% endif %}>Payments</a>
+      <a href="{{ url_for('reports') }}" {% if request.endpoint == "reports" %}class="active"{% endif %}>Reports</a>
       {% endif %}
       {% if current_user.role in ["admin", "owner"] %}
-      <a href="{{ url_for('trainers') }}">Trainers</a>
-      <a href="{{ url_for('equipment') }}">Equipment</a>
-      <a href="{{ url_for('announcements') }}">WhatsApp</a>
+      <a href="{{ url_for('trainers') }}" {% if request.endpoint == "trainers" %}class="active"{% endif %}>Trainers</a>
+      <a href="{{ url_for('equipment') }}" {% if request.endpoint in ["equipment", "equipment_guide"] %}class="active"{% endif %}>Equipment</a>
+      <a href="{{ url_for('announcements') }}" {% if request.endpoint == "announcements" %}class="active"{% endif %}>WhatsApp</a>
       {% endif %}
+      <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Toggle theme">Light mode</button>
       <form method="post" action="{{ url_for('logout') }}" class="logout-form">
         <button type="submit">Logout</button>
       </form>
@@ -45,5 +46,76 @@
   <main class="main">
     {% block content %}{% endblock %}
   </main>
+  <nav class="mobile-bottom-nav" aria-label="Primary mobile navigation">
+    <a href="{{ url_for('index') }}" {% if request.endpoint == "index" %}class="active"{% endif %}>Home</a>
+    {% if current_user.role in ["admin", "owner", "trainer"] %}
+    <a href="{{ url_for('members') }}" {% if request.endpoint in ["members", "member_detail", "edit_member"] %}class="active"{% endif %}>Members</a>
+    {% endif %}
+    {% if current_user.role in ["admin", "owner", "accountant"] %}
+    <a href="{{ url_for('payments') }}" {% if request.endpoint == "payments" %}class="active"{% endif %}>Pay</a>
+    <a href="{{ url_for('reports') }}" {% if request.endpoint == "reports" %}class="active"{% endif %}>Reports</a>
+    {% endif %}
+    {% if current_user.role in ["admin", "owner"] %}
+    <a href="{{ url_for('announcements') }}" {% if request.endpoint == "announcements" %}class="active"{% endif %}>WA</a>
+    {% endif %}
+    <a href="#mobile-menu">More</a>
+  </nav>
+  <section class="mobile-menu-shell" id="mobile-menu">
+    <a class="mobile-menu-backdrop" href="#" aria-label="Close mobile menu"></a>
+    <aside class="mobile-menu-panel" aria-label="Mobile menu">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">StrengthLab</p>
+          <h2>Menu</h2>
+        </div>
+        <a class="button" href="#">Close</a>
+      </div>
+      <nav class="mobile-menu-links">
+        <a href="{{ url_for('index') }}">Dashboard</a>
+        {% if current_user.role == "owner" %}<a href="{{ url_for('owner_dashboard') }}">Owner overview</a>{% endif %}
+        {% if current_user.role == "accountant" %}<a href="{{ url_for('accountant_dashboard') }}">Accounting</a>{% endif %}
+        {% if current_user.role in ["admin", "owner", "trainer"] %}
+        <a href="{{ url_for('members') }}">Members</a>
+        <a href="{{ url_for('trainer_assignments') }}">Assignments</a>
+        <a href="{{ url_for('attendance') }}">Attendance</a>
+        {% endif %}
+        {% if current_user.role in ["admin", "owner", "accountant"] %}
+        <a href="{{ url_for('payments') }}">Payments</a>
+        <a href="{{ url_for('reports') }}">Reports</a>
+        {% endif %}
+        {% if current_user.role in ["admin", "owner"] %}
+        <a href="{{ url_for('trainers') }}">Trainers</a>
+        <a href="{{ url_for('equipment') }}">Equipment</a>
+        <a href="{{ url_for('announcements') }}">WhatsApp center</a>
+        {% endif %}
+        <button type="button" id="mobile-theme-toggle" class="theme-toggle">Light mode</button>
+        <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+          <button type="submit">Logout</button>
+        </form>
+      </nav>
+    </aside>
+  </section>
+  <script>
+    const root = document.documentElement;
+    const toggles = [document.getElementById("theme-toggle"), document.getElementById("mobile-theme-toggle")].filter(Boolean);
+    const savedTheme = localStorage.getItem("strengthlab-theme") || "dark";
+
+    function applyTheme(theme) {
+      root.dataset.theme = theme;
+      toggles.forEach((toggle) => {
+        toggle.textContent = theme === "dark" ? "Light mode" : "Dark mode";
+        toggle.setAttribute("aria-pressed", theme === "light" ? "true" : "false");
+      });
+    }
+
+    applyTheme(savedTheme);
+    toggles.forEach((toggle) => {
+      toggle.addEventListener("click", () => {
+        const nextTheme = root.dataset.theme === "dark" ? "light" : "dark";
+        localStorage.setItem("strengthlab-theme", nextTheme);
+        applyTheme(nextTheme);
+      });
+    });
+  </script>
 </body>
 </html>

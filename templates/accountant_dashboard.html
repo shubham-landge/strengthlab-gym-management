@@ -8,10 +8,31 @@
 </header>
 
 <section class="stats-grid">
-  <div class="stat"><span>Monthly revenue</span><strong>Rs {{ "%.0f"|format(finance.monthly_revenue) }}</strong></div>
-  <div class="stat"><span>Pending dues</span><strong>Rs {{ "%.0f"|format(finance.due_total) }}</strong></div>
-  <div class="stat"><span>Cash</span><strong>Rs {{ "%.0f"|format(finance.cash_total) }}</strong></div>
-  <div class="stat"><span>UPI</span><strong>Rs {{ "%.0f"|format(finance.upi_total) }}</strong></div>
+  <div class="stat"><span>MRR projection</span><strong>Rs {{ "%.0f"|format(finance.mrr) }}</strong><small>This month collected + pending</small></div>
+  <div class="stat"><span>Pending dues</span><strong>Rs {{ "%.0f"|format(finance.due_total) }}</strong><small>{{ watch.unpaid_members }} unpaid members</small></div>
+  <div class="stat"><span>UPI</span><strong>Rs {{ "%.0f"|format(finance.upi_total) }}</strong><small>Settled digitally</small></div>
+  <div class="stat"><span>Cash + bank</span><strong>Rs {{ "%.0f"|format(finance.cash_total + finance.bank_total) }}</strong><small>Counter collections</small></div>
+</section>
+
+<section class="finance-visuals">
+  <article class="panel chart-panel">
+    <div class="section-title"><h2>Revenue velocity</h2><small>Daily collections this month</small></div>
+    <svg class="line-chart" viewBox="0 0 300 140" role="img">
+      <polyline points="{% for point in charts.daily_points %}{{ point.x }},{{ point.y }} {% endfor %}" />
+      {% for point in charts.daily_points %}<circle cx="{{ point.x }}" cy="{{ point.y }}" r="4"><title>{{ point.day }} Rs {{ point.total }}</title></circle>{% endfor %}
+    </svg>
+  </article>
+  <article class="panel chart-panel">
+    <div class="section-title"><h2>Method split</h2><small>Cash flow settlement</small></div>
+    <div class="method-bar">
+      {% for item in charts.method_split %}
+      <i class="method-{{ item.method|lower|replace(' ', '-') }}" style="width: {{ item.percent }}%" title="{{ item.method }} {{ item.percent }}%"></i>
+      {% endfor %}
+    </div>
+    <div class="method-legend">
+      {% for item in charts.method_split %}<span><b></b>{{ item.method }} | {{ item.percent }}%</span>{% else %}<span>No collections yet</span>{% endfor %}
+    </div>
+  </article>
 </section>
 
 <section class="two-col">
@@ -44,7 +65,7 @@
       <thead><tr><th>Member</th><th>Amount</th><th>Status</th><th>Method</th><th>Date</th></tr></thead>
       <tbody>
         {% for payment in recent_payments %}
-        <tr><td>{{ payment.member_name }}</td><td>Rs {{ payment.amount }}</td><td>{{ payment.status }}</td><td>{{ payment.payment_method or "-" }}</td><td>{{ payment.paid_on or payment.due_on }}</td></tr>
+        <tr><td>{{ payment.member_name }}</td><td>Rs {{ payment.amount }}</td><td><span class="pill {{ 'good' if payment.status == 'Received' else 'warn' }}">{{ payment.status }}</span></td><td>{{ payment.payment_method or "-" }}</td><td>{{ payment.paid_on or payment.due_on }}</td></tr>
         {% endfor %}
       </tbody>
     </table>

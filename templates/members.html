@@ -30,19 +30,56 @@
 </section>
 {% endif %}
 
+<section class="panel">
+  <div class="section-title"><h2>Find members</h2><small>{{ members|length }} result(s)</small></div>
+  <form class="grid-form member-filters" method="get">
+    <label>Search<input name="q" value="{{ filters.q }}" placeholder="Name, phone, or goal"></label>
+    <label>Status
+      <select name="status">
+        <option value="">All statuses</option>
+        {% for status in ["Paid", "Due", "Frozen"] %}<option value="{{ status }}" {% if filters.status == status %}selected{% endif %}>{{ status }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Workout
+      <select name="workout_subscription">
+        <option value="">All workout services</option>
+        {% for option in ["Regular", "Premium"] %}<option value="{{ option }}" {% if filters.workout_subscription == option %}selected{% endif %}>{{ option }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Diet
+      <select name="diet_subscription">
+        <option value="">All diet services</option>
+        {% for option in ["None", "Regular", "Premium"] %}<option value="{{ option }}" {% if filters.diet_subscription == option %}selected{% endif %}>{{ option }}</option>{% endfor %}
+      </select>
+    </label>
+    {% if current_user.role in ["admin", "owner"] %}
+    <label>Trainer
+      <select name="trainer_id">
+        <option value="">All trainers</option>
+        <option value="unassigned" {% if filters.trainer_id == "unassigned" %}selected{% endif %}>Unassigned</option>
+        {% for trainer in trainers %}<option value="{{ trainer.id }}" {% if filters.trainer_id == trainer.id|string %}selected{% endif %}>{{ trainer.name }}</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
+    <button class="button primary" type="submit">Apply filters</button>
+    <a class="button" href="{{ url_for('members') }}">Clear</a>
+  </form>
+</section>
+
 <section class="table-wrap">
   <table>
-    <thead><tr><th>Name</th><th>Phone</th><th>Goal</th><th>Plan</th><th>Services</th><th>Trainer</th><th></th></tr></thead>
+    <thead><tr><th>Name</th><th>Phone</th><th>Goal</th><th>Plan</th><th>Status</th><th>Services</th><th>Trainer</th><th></th></tr></thead>
     <tbody>
       {% for member in members %}
       <tr>
-        <td><a href="{{ url_for('member_detail', member_id=member.id) }}">{{ member.name }}</a></td>
-        <td>{{ member.phone }}</td>
-        <td>{{ member.goal or "General" }}</td>
-        <td>{{ member.plan_name }}</td>
-        <td>Workout: {{ member.workout_subscription or "Regular" }}<br>Diet: {{ member.diet_subscription or "None" }}</td>
-        <td>{{ member.trainer_name or "Unassigned" }}</td>
-        <td class="actions-cell">
+        <td data-label="Name"><a href="{{ url_for('member_detail', member_id=member.id) }}">{{ member.name }}</a></td>
+        <td data-label="Phone">{{ member.phone }}</td>
+        <td data-label="Goal">{{ member.goal or "General" }}</td>
+        <td data-label="Plan">{{ member.plan_name }}</td>
+        <td data-label="Status"><span class="pill {% if member.payment_status == 'Paid' %}good{% elif member.payment_status == 'Frozen' %}warn{% endif %}">{{ member.payment_status }}</span></td>
+        <td data-label="Services">Workout: {{ member.workout_subscription or "Regular" }}<br>Diet: {{ member.diet_subscription or "None" }}</td>
+        <td data-label="Trainer">{{ member.trainer_name or "Unassigned" }}</td>
+        <td data-label="Actions" class="actions-cell">
           {% if current_user.role == "admin" %}
           <a href="{{ url_for('edit_member', member_id=member.id) }}">Edit</a>
           <form method="post" action="{{ url_for('delete_member', member_id=member.id) }}">

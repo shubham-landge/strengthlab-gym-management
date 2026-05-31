@@ -8,23 +8,53 @@
   </div>
 </header>
 
-<section class="stats-grid">
-  <div class="stat"><span>Members</span><strong>{{ stats.members }}</strong></div>
-  <div class="stat"><span>Revenue this month</span><strong>Rs {{ "%.0f"|format(finance.monthly_revenue) }}</strong></div>
-  <div class="stat"><span>Dues pending</span><strong>Rs {{ "%.0f"|format(finance.due_total) }}</strong></div>
-  <div class="stat"><span>Visits today</span><strong>{{ stats.today_attendance }}</strong></div>
+<section class="bento-grid">
+  <article class="stat bento-span-3"><span>MRR projection</span><strong>Rs {{ "%.0f"|format(finance.mrr) }}</strong><small>Collected + pending this month</small></article>
+  <article class="stat bento-span-3"><span>Active members</span><strong>{{ watch.active_members }}</strong><small>{{ watch.expiring_7 }} expiring in 7 days</small></article>
+  <article class="stat bento-span-3"><span>Churn risk</span><strong>{{ finance.churn_risk }}</strong><small>Expired in past 48 hours</small></article>
+  <article class="stat bento-span-3"><span>Check-ins today</span><strong>{{ watch.checkins_today }}</strong><small>{{ watch.checkins_7_days }} visits in 7 days</small></article>
+
+  <article class="panel bento-span-6">
+    <div class="section-title"><h2>Collected vs pending</h2><small>Current calendar month</small></div>
+    {% set total_flow = finance.current_month_collected + finance.current_month_pending %}
+    {% set collected_pct = ((finance.current_month_collected / total_flow) * 100) if total_flow else 0 %}
+    <div class="split-metric"><strong>{{ "%.0f"|format(collected_pct) }}%</strong><span>collection health</span></div>
+    <div class="finance-gauge"><i style="width: {{ collected_pct }}%"></i></div>
+    <div class="mini-grid">
+      <div><span>Collected</span><strong>Rs {{ "%.0f"|format(finance.current_month_collected) }}</strong></div>
+      <div><span>Pending</span><strong>Rs {{ "%.0f"|format(finance.current_month_pending) }}</strong></div>
+      <div><span>Unpaid</span><strong>{{ watch.unpaid_members }}</strong></div>
+    </div>
+  </article>
+
+  <article class="panel chart-panel bento-span-6">
+    <div class="section-title"><h2>Revenue velocity</h2><small>Daily collections this month</small></div>
+    <svg class="line-chart" viewBox="0 0 300 140" role="img">
+      <polyline points="{% for point in charts.daily_points %}{{ point.x }},{{ point.y }} {% endfor %}" />
+      {% for point in charts.daily_points %}
+      <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4"><title>{{ point.day }} Rs {{ point.total }}</title></circle>
+      {% endfor %}
+    </svg>
+  </article>
 </section>
 
 <section class="two-col">
   <div class="panel">
-    <div class="section-title"><h2>Collection split</h2></div>
+    <div class="section-title"><h2>Payment method split</h2><small>Settlement view</small></div>
+    <div class="method-bar">
+      {% for item in charts.method_split %}
+      <i class="method-{{ item.method|lower|replace(' ', '-') }}" style="width: {{ item.percent }}%" title="{{ item.method }} {{ item.percent }}%"></i>
+      {% endfor %}
+    </div>
     <div class="stack">
       <div class="item-row"><span>Cash collected</span><strong>Rs {{ "%.0f"|format(finance.cash_total) }}</strong></div>
       <div class="item-row"><span>UPI collected</span><strong>Rs {{ "%.0f"|format(finance.upi_total) }}</strong></div>
+      <div class="item-row"><span>Card collected</span><strong>Rs {{ "%.0f"|format(finance.card_total) }}</strong></div>
+      <div class="item-row"><span>Bank transfer</span><strong>Rs {{ "%.0f"|format(finance.bank_total) }}</strong></div>
     </div>
   </div>
   <div class="panel">
-    <div class="section-title"><h2>Attendance trend</h2></div>
+    <div class="section-title"><h2>Attendance velocity</h2><small>Last 7 days</small></div>
     {% for row in attendance_by_day %}
     <div class="bar-row"><span>{{ row.day }}</span><div><i style="width: {{ [row.visits * 12, 100]|min }}%"></i></div><b>{{ row.visits }}</b></div>
     {% else %}
@@ -35,22 +65,70 @@
 
 <section class="two-col">
   <div class="panel">
-    <div class="section-title"><h2>Upcoming renewals</h2></div>
+    <div class="section-title"><h2>Renewal radar</h2><small>{{ watch.expiring_7 }} this week, {{ watch.expiring_14 }} next week</small></div>
     <div class="stack">
       {% for member in renewals %}
-      <div class="item-row"><div><strong>{{ member.name }}</strong><small>{{ member.phone }}</small></div><span>{{ member.subscription_end }} · {{ member.payment_status }}</span></div>
+      <div class="item-row"><div><strong>{{ member.name }}</strong><small>{{ member.phone }}</small></div><span class="pill">{{ member.subscription_end }} | {{ member.payment_status }}</span></div>
+      {% else %}
+      <p class="empty">No upcoming renewal records.</p>
       {% endfor %}
     </div>
   </div>
   <div class="panel">
-    <div class="section-title"><h2>Equipment watch</h2></div>
+    <div class="section-title"><h2>Unpaid members</h2><a href="{{ url_for('payments') }}">Collect</a></div>
     <div class="stack">
-      {% for item in equipment_watch %}
-      <div class="item-row"><div><strong>{{ item.name }}</strong><small>{{ item.category }}</small></div><span class="pill warn">{{ item.condition_status }}</span></div>
+      {% for member in unpaid_members %}
+      <div class="item-row">
+        <div><strong>{{ member.name }}</strong><small>{{ member.phone }}</small></div>
+        <div class="actions-cell">
+          <span class="pill warn">{{ member.payment_status }}</span>
+          <a href="{{ url_for('member_detail', member_id=member.id) }}">Open</a>
+        </div>
+      </div>
       {% else %}
-      <p class="empty">No equipment needs attention.</p>
+      <p class="empty">No unpaid member alerts.</p>
       {% endfor %}
     </div>
+  </div>
+</section>
+
+<section class="two-col">
+  <div class="panel">
+    <div class="section-title"><h2>Active membership holds</h2><small>{{ freeze_watch.active|length }} currently frozen</small></div>
+    <div class="stack">
+      {% for freeze in freeze_watch.active %}
+      <div class="item-row">
+        <div><strong>{{ freeze.member_name }}</strong><small>{{ freeze.frozen_on }} | {{ freeze.reason or "No reason" }}</small></div>
+        <a href="{{ url_for('member_detail', member_id=freeze.member_id) }}">Open</a>
+      </div>
+      {% else %}
+      <p class="empty">No active membership holds.</p>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="panel">
+    <div class="section-title"><h2>Recently reactivated</h2><small>{{ freeze_watch.total_days }} total frozen days logged</small></div>
+    <div class="stack">
+      {% for freeze in freeze_watch.recent %}
+      <div class="item-row">
+        <div><strong>{{ freeze.member_name }}</strong><small>{{ freeze.frozen_on }} to {{ freeze.unfrozen_on }}</small></div>
+        <span class="pill good">{{ freeze.days_frozen }} days</span>
+      </div>
+      {% else %}
+      <p class="empty">No completed freeze periods yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="section-title"><h2>Equipment watch</h2></div>
+  <div class="stack">
+    {% for item in equipment_watch %}
+    <div class="item-row"><div><strong>{{ item.name }}</strong><small>{{ item.category }}</small></div><span class="pill warn">{{ item.condition_status }}</span></div>
+    {% else %}
+    <p class="empty">No equipment needs attention.</p>
+    {% endfor %}
   </div>
 </section>
 {% endblock %}

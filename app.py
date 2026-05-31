@@ -743,6 +743,25 @@ def init_db():
             FOREIGN KEY(payment_id) REFERENCES payments(id)
         );
 
+        CREATE TABLE IF NOT EXISTS membership_freezes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            member_id INTEGER NOT NULL,
+            frozen_on TEXT NOT NULL,
+            unfrozen_on TEXT,
+            days_frozen INTEGER,
+            previous_status TEXT,
+            restored_status TEXT,
+            expiry_before TEXT,
+            expiry_after TEXT,
+            reason TEXT,
+            created_by INTEGER,
+            closed_by INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(member_id) REFERENCES members(id),
+            FOREIGN KEY(created_by) REFERENCES users(id),
+            FOREIGN KEY(closed_by) REFERENCES users(id)
+        );
+
         CREATE TABLE IF NOT EXISTS announcements (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
@@ -1126,67 +1145,255 @@ def parse_ai_json(text):
     return json.loads(cleaned)
 
 
+def member_text(member, key, default=""):
+    try:
+        value = member[key]
+    except (KeyError, IndexError):
+        value = None
+    return str(value or default).strip()
+
+
+def member_number(member, key, default=0):
+    try:
+        return float(member[key] or default)
+    except (TypeError, ValueError, KeyError, IndexError):
+        return float(default)
+
+
+def has_any(text, keywords):
+    text = (text or "").lower()
+    return any(keyword in text for keyword in keywords)
+
+
+def parsed_member_choices(member, key):
+    return [item.lower() for item in unpack_choices(member_text(member, key))]
+
+
+def workout_blueprint(level, goal_text, injury_text):
+    level_key = (level or "Beginner").lower()
+    if "advanced" in level_key:
+        split = "Push / Pull / Legs"
+        days = 6
+        sets = "3-5"
+        reps = "6-12"
+        rpe = "RPE 8-9 / RIR 1-2"
+        rest = "120-180 sec compound, 60-90 sec isolation"
+    elif "intermediate" in level_key:
+        split = "Upper / Lower"
+        days = 4
+        sets = "3-4"
+        reps = "8-12"
+        rpe = "RPE 7-8 / RIR 2-3"
+        rest = "90-150 sec compound, 60-90 sec isolation"
+    else:
+        split = "Full Body"
+        days = 3
+        sets = "2-3"
+        reps = "10-15"
+        rpe = "RPE 6-7 / RIR 3-4"
+        rest = "75-120 sec compound, 45-75 sec isolation"
+
+    if has_any(goal_text, ["fat", "loss", "weight loss"]):
+        conditioning = "Finish 12-20 min treadmill incline walk or cycle at conversational pace."
+        progression = "Add reps first, then weight. Keep weekly steps high and avoid missed sessions."
+    elif has_any(goal_text, ["muscle", "gain", "hypertrophy", "size"]):
+        conditioning = "Keep cardio short: 8-12 min easy cycle after lifting."
+        progression = "When every set reaches the top rep target, add the smallest possible load next week."
+    else:
+        conditioning = "Add 10-15 min easy treadmill or cycle on two training days."
+        progression = "Progress one variable weekly: cleaner form, one extra rep, or a small load increase."
+
+    if injury_text and injury_text.lower() not in {"none", "no", "na"}:
+        safety = f"Modify around injury note: {injury_text}. Use pain-free range and trainer clearance."
+    else:
+        safety = "Stop sharp pain, dizziness, chest pain, numbness, or worsening joint pain immediately."
+
+    return {
+        "split": split,
+        "days": days,
+        "sets": sets,
+        "reps": reps,
+        "rpe": rpe,
+        "rest": rest,
+        "conditioning": conditioning,
+        "progression": progression,
+        "safety": safety,
+    }
+
+
+def session_templates(split):
+    if split == "Push / Pull / Legs":
+        return [
+            ("Day 1 - Push A", ["Dumbbell Flat Bench Press", "Dumbbell Shoulder Press", "Pec Deck Fly", "Seated Lateral Raise Machine", "Parallel Bar Dip"]),
+            ("Day 2 - Pull A", ["Lat Pulldown", "One-Arm Dumbbell Row", "Back Extension", "Preacher Curl", "Leg Raise Stand"]),
+            ("Day 3 - Legs A", ["Leg Press", "Dumbbell Romanian Deadlift", "Seated Leg Curl", "Standing Calf Raise", "Cycle"]),
+            ("Day 4 - Push B", ["Dumbbell Decline Bench Press", "Pec Deck Fly", "Seated Lateral Raise Machine", "Parallel Bar Dip"]),
+            ("Day 5 - Pull B", ["Chin-Up or Lat Pulldown", "Dumbbell Row", "Back Extension", "Preacher Curl", "Hanging Knee Raise"]),
+            ("Day 6 - Legs B", ["Leg Press", "Dumbbell Split Squat", "Seated Leg Curl", "Seated Calf Raise", "Treadmill Incline Walk"]),
+        ]
+    if split == "Upper / Lower":
+        return [
+            ("Day 1 - Upper A", ["Dumbbell Flat Bench Press", "Lat Pulldown", "Pec Deck Fly", "Seated Lateral Raise Machine", "Preacher Curl"]),
+            ("Day 2 - Lower A", ["Leg Press", "Dumbbell Romanian Deadlift", "Seated Leg Curl", "Standing Calf Raise", "Cycle"]),
+            ("Day 3 - Upper B", ["Dumbbell Decline Bench Press", "One-Arm Dumbbell Row", "Dumbbell Shoulder Press", "Lat Pulldown", "Leg Raise Stand"]),
+            ("Day 4 - Lower B", ["Leg Press", "Dumbbell Walking Lunge", "Back Extension", "Seated Calf Raise", "Treadmill Incline Walk"]),
+        ]
+    return [
+        ("Day 1 - Full Body A", ["Leg Press", "Dumbbell Flat Bench Press", "Lat Pulldown", "Seated Leg Curl", "Back Extension"]),
+        ("Day 2 - Full Body B", ["Dumbbell Goblet Squat", "Pec Deck Fly", "One-Arm Dumbbell Row", "Preacher Curl", "Parallel Bar Knee Raise"]),
+        ("Day 3 - Full Body C", ["Leg Press", "Dumbbell Bench Press", "Lat Pulldown", "Dumbbell Romanian Deadlift", "Seated or Standing Calf Raise"]),
+    ]
+
+
+def nutrition_targets(member, goal_text):
+    weight = member_number(member, "weight_kg", 70)
+    height = member_number(member, "height_cm", 170)
+    age = member_number(member, "age", 30)
+    gender = member_text(member, "gender", "Male").lower()
+    activity = member_text(member, "activity_level", "Lightly Active").lower()
+    base = 10 * weight + 6.25 * height - 5 * age + (5 if gender == "male" else -161)
+    multiplier = 1.2
+    if "moderate" in activity:
+        multiplier = 1.45
+    elif "very" in activity:
+        multiplier = 1.65
+    elif "light" in activity:
+        multiplier = 1.35
+    calories = int(base * multiplier)
+    if has_any(goal_text, ["fat", "loss", "weight loss"]):
+        calories -= 350
+    elif has_any(goal_text, ["muscle", "gain", "hypertrophy"]):
+        calories += 250
+    protein = int(max(weight * 1.6, 90))
+    fat = int(max(weight * 0.7, 45))
+    carbs = int(max((calories - protein * 4 - fat * 9) / 4, 120))
+    return calories, protein, carbs, fat
+
+
+def recipe_cards(member, calories, protein, carbs, fat):
+    preference = f"{member_text(member, 'food_preference')} {member_text(member, 'dietary_style')}".lower()
+    exclusions = parsed_member_choices(member, "food_exclusions")
+    avoided = member_text(member, "other_foods_avoided").lower()
+    restriction_text = " ".join(exclusions + [avoided, preference])
+    vegan = "vegan" in restriction_text
+    vegetarian = vegan or "vegetarian" in restriction_text or "veg" in restriction_text
+    no_lactose = "lactose" in restriction_text or "dairy" in restriction_text
+    no_gluten = "gluten" in restriction_text or "celiac" in restriction_text
+    no_nuts = "nut" in restriction_text or "peanut" in restriction_text
+
+    protein_food = "tofu" if vegan else ("paneer" if vegetarian and not no_lactose else "eggs" if vegetarian else "chicken")
+    dairy = "soy curd" if no_lactose or vegan else "curd"
+    carb = "rice" if no_gluten else "roti or rice"
+    nut_note = "Use roasted chana or seeds, not nuts." if no_nuts else "Optional: 10 g peanuts or almonds if tolerated."
+
+    return [
+        {
+            "title": "Breakfast - protein poha bowl",
+            "ingredients": f"Poha 70 g, {protein_food} 120 g, mixed vegetables 100 g, oil 5 g, lemon, coriander.",
+            "steps": "Cook poha with vegetables. Add protein separately. Finish with lemon and coriander.",
+            "macros": f"Approx {round(calories * 0.25)} kcal, {round(protein * 0.25)} g protein, {round(carbs * 0.28)} g carbs, {round(fat * 0.2)} g fat.",
+        },
+        {
+            "title": "Lunch - StrengthLab thali",
+            "ingredients": f"Dal 1 bowl, {protein_food} 150 g, {carb} 2 portions, salad 150 g, {dairy} 100 g.",
+            "steps": "Build the plate around protein first, then dal, carbs, salad, and curd/soy curd.",
+            "macros": f"Approx {round(calories * 0.35)} kcal, {round(protein * 0.35)} g protein, {round(carbs * 0.38)} g carbs, {round(fat * 0.35)} g fat.",
+        },
+        {
+            "title": "Snack - training support",
+            "ingredients": f"Sprouts 120 g or whey/plant protein 1 scoop, banana 1, {nut_note}",
+            "steps": "Use 60-90 minutes pre-workout or immediately post-workout if dinner is delayed.",
+            "macros": f"Approx {round(calories * 0.15)} kcal, {round(protein * 0.15)} g protein, {round(carbs * 0.18)} g carbs, {round(fat * 0.1)} g fat.",
+        },
+        {
+            "title": "Dinner - light recovery plate",
+            "ingredients": f"{protein_food.title()} 150 g, cooked vegetables 200 g, {carb} 1 portion, soup or salad.",
+            "steps": "Keep dinner lighter than lunch unless training late. Add carbs after hard lower-body days.",
+            "macros": f"Approx {round(calories * 0.25)} kcal, {round(protein * 0.25)} g protein, {round(carbs * 0.16)} g carbs, {round(fat * 0.35)} g fat.",
+        },
+    ]
+
+
 def generate_rule_based_plans(member):
-    member_bmi = bmi(member["height_cm"], member["weight_kg"])
-    goal = (member["goal"] or "general fitness").lower()
+    goal = member_text(member, "primary_fitness_goal") or member_text(member, "goal", "general fitness")
+    level = member_text(member, "fitness_level", "Beginner")
+    injury_text = member_text(member, "injury_notes")
     premium = bool(member["premium"])
-    fitness_level = member["fitness_level"] or "Beginner"
-    food_preference = member["food_preference"] or "balanced local meals"
+    blueprint = workout_blueprint(level, goal, injury_text)
+    available = ", ".join(equipment_names())
 
-    if "loss" in goal or "fat" in goal:
-        nutrition_focus = "high-protein calorie deficit with high-fiber carbs"
-        cardio = "25 minutes incline walk or cycling after strength work"
-        calories = "Reduce portions by 10-15% while keeping protein high"
-    elif "gain" in goal or "muscle" in goal:
-        nutrition_focus = "lean calorie surplus with protein at every meal"
-        cardio = "10 minutes easy cardio warm-up, no long cardio after lifting"
-        calories = "Add one protein-rich snack and one carb serving around training"
-    else:
-        nutrition_focus = "balanced macros, hydration, and consistent meal timing"
-        cardio = "15-20 minutes mixed cardio three times per week"
-        calories = "Keep portions steady and track weekly progress"
-
-    if member_bmi and member_bmi >= 30:
-        safety_note = "Use joint-friendly progressions and avoid max-effort lifts until conditioning improves."
-    elif member["injury_notes"] and member["injury_notes"].lower() not in {"none", "no"}:
-        safety_note = f"Modify exercises for injury note: {member['injury_notes']}."
-    elif member["medical_notes"] and member["medical_notes"].lower() not in {"none", "no"}:
-        safety_note = f"Respect health note: {member['medical_notes']}. Get trainer clearance for pain or dizziness."
-    else:
-        safety_note = "Progress gradually and stop any movement that causes sharp pain."
-
-    workout_days = [
-        f"Level: {fitness_level}. Keep 1-2 reps in reserve on most sets.",
-        "Day 1: Full-body strength - squats or leg press, chest press, seated row, plank.",
-        f"Day 2: Cardio and mobility - {cardio}, hips, hamstrings, shoulders.",
-        "Day 3: Upper body - lat pulldown, dumbbell press, cable row, curls, triceps pressdown.",
-        "Day 4: Lower body - deadlift pattern, lunges, leg curl, calf raises, core holds.",
-        "Day 5: Conditioning - intervals, sled pushes or battle ropes, stretching.",
+    workout_lines = [
+        "STRENGTHLAB TRAINING BLUEPRINT",
+        f"Goal: {goal}",
+        f"Level: {level}",
+        f"Split: {blueprint['split']} | Weekly frequency: {blueprint['days']} days",
+        f"Intensity: {blueprint['rpe']} | Default rest: {blueprint['rest']}",
+        "",
+        "Global warm-up: 5-8 min treadmill or cycle, then shoulder circles, hip openers, knee/ankle prep, and one light warm-up set.",
     ]
-    if premium:
-        workout_days.append("Premium: Weekly trainer review, form videos, and progression adjustment every Monday.")
-
-    diet_lines = [
-        f"Goal focus: {nutrition_focus}.",
-        f"Food preference: {food_preference}.",
-        f"Calories: {calories}.",
-        "Breakfast: Eggs or paneer/tofu bhurji, oats or poha, fruit.",
-        "Lunch: Dal/chicken/fish/paneer, rice or roti, salad, curd.",
-        "Snack: Whey/curd/sprouts plus nuts or fruit.",
-        "Dinner: Lean protein, vegetables, small carb portion if training late.",
-        "Hydration: 2.5-3.5 litres water daily; add electrolytes after heavy sweating.",
-    ]
-    if premium:
-        diet_lines.extend(
+    for title, exercises in session_templates(blueprint["split"]):
+        workout_lines.extend(
             [
-                "Premium add-on: Sunday meal-prep list and two flexible restaurant meals per week.",
-                "Supplement note: Consider creatine monohydrate only if suitable and approved by your trainer.",
+                "",
+                title,
+                "Warm-up: easy treadmill/cycle 5 min + movement-specific ramp set.",
+                "Main work:",
             ]
         )
+        for exercise in exercises:
+            workout_lines.append(f"- {exercise}: {blueprint['sets']} sets x {blueprint['reps']} reps, {blueprint['rpe']}, rest {blueprint['rest']}.")
+        workout_lines.extend(
+            [
+                f"Conditioning: {blueprint['conditioning']}",
+                "Cool-down: 4-6 min slow walk/cycle, hamstring stretch, chest stretch, breathing reset.",
+                "Coach notes: keep form clean before loading; record load/reps after every session.",
+            ]
+        )
+    workout_lines.extend(
+        [
+            "",
+            f"Progression: {blueprint['progression']}",
+            f"Equipment basis: {available}",
+            f"Safety: {blueprint['safety']}",
+        ]
+    )
+    if premium:
+        workout_lines.append("Premium review: admin/trainer should review execution weekly and adjust volume or exercise selection.")
 
-    workout_plan = "\n".join(workout_days + [f"Safety: {safety_note}"])
-    diet_plan = "\n".join(diet_lines + [f"Safety: {safety_note}"])
-    return workout_plan, diet_plan
+    calories, protein, carbs, fat = nutrition_targets(member, goal)
+    food_preference = member_text(member, "food_preference", "balanced local meals")
+    diet_lines = [
+        "STRENGTHLAB NUTRITION BLUEPRINT",
+        f"Goal: {goal}",
+        f"Food preference: {food_preference}",
+        f"Daily targets: {calories} kcal, protein {protein} g, carbs {carbs} g, fat {fat} g.",
+        "Meal timing: keep 3 main meals plus 1 snack unless the member prefers fewer meals.",
+        "Hydration: 35-45 ml water per kg body weight; add electrolytes after heavy sweat sessions.",
+        "Restriction rule: avoid listed allergies/exclusions first, then adjust protein source.",
+        "",
+        "Recipe cards:",
+    ]
+    for index, recipe in enumerate(recipe_cards(member, calories, protein, carbs, fat), start=1):
+        diet_lines.extend(
+            [
+                "",
+                f"{index}. {recipe['title']}",
+                f"Ingredients: {recipe['ingredients']}",
+                f"Steps: {recipe['steps']}",
+                f"Macros: {recipe['macros']}",
+            ]
+        )
+    diet_lines.extend(
+        [
+            "",
+            "Weekly adjustment: if weight is not moving for 2 weeks, adjust daily calories by 150-200 based on the goal.",
+            f"Safety: {blueprint['safety']} Nutrition guidance is educational and not medical treatment.",
+        ]
+    )
+    if premium:
+        diet_lines.append("Premium review: admin can add one flexible restaurant meal and a Sunday prep list.")
+
+    return "\n".join(workout_lines), "\n".join(diet_lines)
 
 
 def apply_customization_notes(plan_text, customizations):
@@ -1199,6 +1406,35 @@ def apply_customization_notes(plan_text, customizations):
 def service_level(member, field_name, default="Regular"):
     value = (member[field_name] if member and field_name in member.keys() else None) or default
     return value
+
+
+def member_preview_from_form(member, form):
+    preview = dict(member)
+    preview.update(
+        {
+            "name": form.get("name") or member["name"],
+            "phone": form.get("phone") or member["phone"],
+            "email": form.get("email") or member["email"],
+            "age": form.get("age") or member["age"],
+            "gender": form.get("gender") or member["gender"],
+            "height_cm": form.get("height_cm") or member["height_cm"],
+            "weight_kg": form.get("weight_kg") or member["weight_kg"],
+            "goal": form.get("goal") or member["goal"],
+            "fitness_level": form.get("fitness_level") or member["fitness_level"],
+            "food_preference": form.get("food_preference") or member["food_preference"],
+            "medical_notes": form.get("medical_notes") or member["medical_notes"],
+            "injury_notes": form.get("injury_notes") or member["injury_notes"],
+            "plan_name": form.get("plan_name") or member["plan_name"],
+            "workout_subscription": form.get("workout_subscription") or service_level(member, "workout_subscription"),
+            "diet_subscription": form.get("diet_subscription") or service_level(member, "diet_subscription", "None"),
+            "premium": 1
+            if form.get("workout_subscription") == "Premium" or form.get("diet_subscription") == "Premium"
+            else member["premium"],
+            "workout_plan": form.get("workout_plan") or member["workout_plan"],
+            "diet_plan": form.get("diet_plan") or member["diet_plan"],
+        }
+    )
+    return preview
 
 
 def generate_plan_draft(member, plan_type, customizations=None):
@@ -1444,6 +1680,9 @@ def finance_stats():
         "card_total": query_one(
         "SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE status = 'Received' AND payment_method = 'Card' AND strftime('%Y-%m', paid_on) = strftime('%Y-%m', 'now')"
         )["total"],
+        "bank_total": query_one(
+            "SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE status = 'Received' AND payment_method = 'Bank Transfer' AND strftime('%Y-%m', paid_on) = strftime('%Y-%m', 'now')"
+        )["total"],
         "current_month_collected": collected,
         "current_month_pending": pending,
         "mrr": collected + pending,
@@ -1603,6 +1842,84 @@ def finance_chart_data():
         for row in method_rows
     ]
     return {"daily_points": points, "method_split": methods}
+
+
+def business_watch_data():
+    return {
+        "active_members": query_one(
+            """
+            SELECT COUNT(*) AS count
+            FROM members
+            WHERE COALESCE(payment_status, '') = 'Paid'
+              AND (subscription_end IS NULL OR date(subscription_end) >= date('now'))
+            """
+        )["count"],
+        "expired_members": query_one(
+            """
+            SELECT COUNT(*) AS count
+            FROM members
+            WHERE subscription_end IS NOT NULL
+              AND date(subscription_end) < date('now')
+            """
+        )["count"],
+        "frozen_members": query_one(
+            "SELECT COUNT(*) AS count FROM members WHERE COALESCE(payment_status, '') = 'Frozen'"
+        )["count"],
+        "expiring_7": query_one(
+            """
+            SELECT COUNT(*) AS count
+            FROM members
+            WHERE subscription_end IS NOT NULL
+              AND date(subscription_end) BETWEEN date('now') AND date('now', '+7 day')
+            """
+        )["count"],
+        "expiring_14": query_one(
+            """
+            SELECT COUNT(*) AS count
+            FROM members
+            WHERE subscription_end IS NOT NULL
+              AND date(subscription_end) BETWEEN date('now', '+8 day') AND date('now', '+14 day')
+            """
+        )["count"],
+        "unpaid_members": query_one(
+            "SELECT COUNT(*) AS count FROM members WHERE COALESCE(payment_status, '') != 'Paid'"
+        )["count"],
+        "checkins_today": query_one(
+            "SELECT COUNT(*) AS count FROM attendance WHERE date(check_in) = date('now')"
+        )["count"],
+        "checkins_7_days": query_one(
+            "SELECT COUNT(*) AS count FROM attendance WHERE date(check_in) >= date('now', '-6 day')"
+        )["count"],
+    }
+
+
+def freeze_watch_data(limit=8):
+    active = query_all(
+        """
+        SELECT membership_freezes.*, members.name AS member_name, members.phone, members.subscription_end
+        FROM membership_freezes
+        JOIN members ON members.id = membership_freezes.member_id
+        WHERE membership_freezes.unfrozen_on IS NULL
+        ORDER BY membership_freezes.frozen_on DESC, membership_freezes.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    recent = query_all(
+        """
+        SELECT membership_freezes.*, members.name AS member_name, members.phone, members.subscription_end
+        FROM membership_freezes
+        JOIN members ON members.id = membership_freezes.member_id
+        WHERE membership_freezes.unfrozen_on IS NOT NULL
+        ORDER BY membership_freezes.unfrozen_on DESC, membership_freezes.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    total_days = query_one(
+        "SELECT COALESCE(SUM(days_frozen), 0) AS total FROM membership_freezes WHERE unfrozen_on IS NOT NULL"
+    )["total"]
+    return {"active": active, "recent": recent, "total_days": total_days}
 
 
 def wa_link(phone, message):
@@ -1799,6 +2116,47 @@ def today_checkin(member_id):
         "SELECT * FROM workout_checkins WHERE member_id = ? AND checkin_date = ? ORDER BY id DESC LIMIT 1",
         (member_id, date.today().isoformat()),
     )
+
+
+def attendance_streak(member_id):
+    rows = query_all(
+        """
+        SELECT DISTINCT date(check_in) AS day
+        FROM attendance
+        WHERE member_id = ?
+        ORDER BY day DESC LIMIT 30
+        """,
+        (member_id,),
+    )
+    attended_days = {row["day"] for row in rows}
+    streak = 0
+    cursor_day = date.today()
+    if cursor_day.isoformat() not in attended_days:
+        cursor_day -= timedelta(days=1)
+    while cursor_day.isoformat() in attended_days:
+        streak += 1
+        cursor_day -= timedelta(days=1)
+    return streak
+
+
+def member_dashboard_metrics(member, progress_entries, payments):
+    goal = member["primary_fitness_goal"] or member["goal"] or "General fitness"
+    calories, protein, carbs, fat = nutrition_targets(member, goal)
+    latest_progress = progress_entries[0] if progress_entries else None
+    latest_payment = payments[0] if payments else None
+    return {
+        "attendance_streak": attendance_streak(member["id"]),
+        "calories": calories,
+        "protein": protein,
+        "carbs": carbs,
+        "fat": fat,
+        "latest_weight": latest_progress["weight_kg"] if latest_progress else member["weight_kg"],
+        "latest_completion": latest_progress["workout_completion"] if latest_progress else None,
+        "latest_energy": latest_progress["energy_level"] if latest_progress else None,
+        "latest_trainer_note": latest_progress["notes"] if latest_progress and latest_progress["notes"] else None,
+        "latest_invoice": latest_payment["invoice_number"] if latest_payment else None,
+        "latest_payment_status": latest_payment["status"] if latest_payment else member["payment_status"],
+    }
 
 
 def payment_due_message(member_name, amount, due_on, days_left):
@@ -2240,7 +2598,15 @@ def owner_dashboard():
         "SELECT * FROM equipment WHERE condition_status != 'Good' OR date(maintenance_due) <= date('now', '+14 day') ORDER BY maintenance_due ASC LIMIT 8"
     )
     renewals = query_all(
-        "SELECT name, phone, subscription_end, payment_status FROM members WHERE subscription_end IS NOT NULL ORDER BY subscription_end ASC LIMIT 8"
+        "SELECT id, name, phone, subscription_end, payment_status FROM members WHERE subscription_end IS NOT NULL ORDER BY subscription_end ASC LIMIT 8"
+    )
+    unpaid_members = query_all(
+        """
+        SELECT id, name, phone, subscription_end, payment_status
+        FROM members
+        WHERE COALESCE(payment_status, '') != 'Paid'
+        ORDER BY subscription_end ASC LIMIT 8
+        """
     )
     attendance_by_day = query_all(
         """
@@ -2254,9 +2620,13 @@ def owner_dashboard():
         "owner_dashboard.html",
         stats=dashboard_stats(),
         finance=finance_stats(),
+        watch=business_watch_data(),
+        freeze_watch=freeze_watch_data(),
+        charts=finance_chart_data(),
         members=member_rows,
         equipment_watch=equipment_watch,
         renewals=renewals,
+        unpaid_members=unpaid_members,
         attendance_by_day=attendance_by_day,
     )
 
@@ -2291,6 +2661,8 @@ def accountant_dashboard():
     return render_template(
         "accountant_dashboard.html",
         finance=finance_stats(),
+        charts=finance_chart_data(),
+        watch=business_watch_data(),
         payments_due=payments_due,
         recent_payments=recent_payments,
         renewal_queue=renewal_queue,
@@ -2301,11 +2673,36 @@ def accountant_dashboard():
 @role_required("admin", "owner", "trainer")
 def members():
     user = current_user()
-    member_filter = ""
-    params = ()
+    filters = []
+    params = []
     if user["role"] == "trainer":
-        member_filter = "WHERE members.trainer_id = ? OR members.trainer_id IS NULL"
-        params = (user["trainer_id"],)
+        filters.append("(members.trainer_id = ? OR members.trainer_id IS NULL)")
+        params.append(user["trainer_id"])
+    search = request.args.get("q", "").strip()
+    status = request.args.get("status", "").strip()
+    workout_service = request.args.get("workout_subscription", "").strip()
+    diet_service = request.args.get("diet_subscription", "").strip()
+    trainer_filter = request.args.get("trainer_id", "").strip()
+    if search:
+        filters.append("(members.name LIKE ? OR members.phone LIKE ? OR members.goal LIKE ?)")
+        term = f"%{search}%"
+        params.extend([term, term, term])
+    if status:
+        filters.append("members.payment_status = ?")
+        params.append(status)
+    if workout_service:
+        filters.append("COALESCE(members.workout_subscription, 'Regular') = ?")
+        params.append(workout_service)
+    if diet_service:
+        filters.append("COALESCE(members.diet_subscription, 'None') = ?")
+        params.append(diet_service)
+    if trainer_filter and user["role"] in {"admin", "owner"}:
+        if trainer_filter == "unassigned":
+            filters.append("members.trainer_id IS NULL")
+        else:
+            filters.append("members.trainer_id = ?")
+            params.append(trainer_filter)
+    member_filter = f"WHERE {' AND '.join(filters)}" if filters else ""
     member_rows = query_all(
         f"""
         SELECT members.*, trainers.name AS trainer_name
@@ -2313,10 +2710,17 @@ def members():
         {member_filter}
         ORDER BY members.name
         """,
-        params,
+        tuple(params),
     )
     trainers = query_all("SELECT * FROM trainers WHERE active = 1 ORDER BY name")
-    return render_template("members.html", members=member_rows, trainers=trainers)
+    filters_state = {
+        "q": search,
+        "status": status,
+        "workout_subscription": workout_service,
+        "diet_subscription": diet_service,
+        "trainer_id": trainer_filter,
+    }
+    return render_template("members.html", members=member_rows, trainers=trainers, filters=filters_state)
 
 
 @app.route("/members/add", methods=["POST"])
@@ -2609,6 +3013,17 @@ def member_detail(member_id):
         """,
         (member_id,),
     )
+    freeze_history = query_all(
+        """
+        SELECT membership_freezes.*, creator.username AS created_by_name, closer.username AS closed_by_name
+        FROM membership_freezes
+        LEFT JOIN users creator ON creator.id = membership_freezes.created_by
+        LEFT JOIN users closer ON closer.id = membership_freezes.closed_by
+        WHERE membership_freezes.member_id = ?
+        ORDER BY membership_freezes.id DESC LIMIT 8
+        """,
+        (member_id,),
+    )
     return render_template(
         "member_detail.html",
         member=member,
@@ -2617,11 +3032,13 @@ def member_detail(member_id):
         notifications=notifications,
         progress_entries=progress_entries,
         progress_summary=progress_summary(progress_entries),
+        dashboard_metrics=member_dashboard_metrics(member, progress_entries, payments),
         workout_templates=PREBUILT_WORKOUT_PLANS,
         today_plan=personalized_today_plan(member),
         today_checkin=checkin,
         today_completed_items=unpack_choices(checkin["completed_items"]) if checkin else [],
         workout_history=workout_history,
+        freeze_history=freeze_history,
         membership_plans=MEMBERSHIP_PLANS,
         renewal_defaults=renewal_defaults(member),
         profile_options=MEMBER_PROFILE_OPTIONS,
@@ -2651,6 +3068,86 @@ def renew_member(member_id):
             payment_id=result["payment_id"],
         )
     )
+
+
+def restored_payment_status(member):
+    if member["subscription_end"]:
+        try:
+            expiry = datetime.strptime(member["subscription_end"], "%Y-%m-%d").date()
+            return "Paid" if expiry >= date.today() else "Due"
+        except ValueError:
+            pass
+    return "Due"
+
+
+def days_between(start_text, end_text):
+    try:
+        start = datetime.strptime(start_text, "%Y-%m-%d").date()
+        end = datetime.strptime(end_text, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return 0
+    return max((end - start).days + 1, 1)
+
+
+@app.route("/members/<int:member_id>/freeze", methods=["POST"])
+@role_required("admin", "owner")
+def freeze_member(member_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+    if member["payment_status"] == "Frozen":
+        return redirect(url_for("member_detail", member_id=member_id))
+    reason = request.form.get("freeze_reason") or "Membership frozen by staff."
+    user = current_user()
+    frozen_on = date.today().isoformat()
+    execute("UPDATE members SET payment_status = 'Frozen' WHERE id = ?", (member_id,))
+    execute(
+        """
+        INSERT INTO membership_freezes
+        (member_id, frozen_on, previous_status, expiry_before, reason, created_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (member_id, frozen_on, member["payment_status"], member["subscription_end"], reason, user["id"]),
+    )
+    log_notification(member_id, f"Your StrengthLab membership has been frozen. Reason: {reason}")
+    return redirect(url_for("member_detail", member_id=member_id, frozen=1))
+
+
+@app.route("/members/<int:member_id>/unfreeze", methods=["POST"])
+@role_required("admin", "owner")
+def unfreeze_member(member_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+    status = restored_payment_status(member)
+    active_freeze = query_one(
+        "SELECT * FROM membership_freezes WHERE member_id = ? AND unfrozen_on IS NULL ORDER BY id DESC LIMIT 1",
+        (member_id,),
+    )
+    today_text = date.today().isoformat()
+    days_frozen = days_between(active_freeze["frozen_on"], today_text) if active_freeze else 0
+    expiry_after = member["subscription_end"]
+    if request.form.get("extend_expiry") and member["subscription_end"] and days_frozen:
+        try:
+            expiry_after = (
+                datetime.strptime(member["subscription_end"], "%Y-%m-%d").date()
+                + timedelta(days=days_frozen)
+            ).isoformat()
+        except ValueError:
+            expiry_after = member["subscription_end"]
+    execute("UPDATE members SET payment_status = ?, subscription_end = ? WHERE id = ?", (status, expiry_after, member_id))
+    if active_freeze:
+        execute(
+            """
+            UPDATE membership_freezes
+            SET unfrozen_on = ?, days_frozen = ?, restored_status = ?, expiry_after = ?, closed_by = ?
+            WHERE id = ?
+            """,
+            (today_text, days_frozen, status, expiry_after, current_user()["id"], active_freeze["id"]),
+        )
+    extension_note = f" Expiry extended to {expiry_after}." if expiry_after != member["subscription_end"] else ""
+    log_notification(member_id, f"Your StrengthLab membership has been reactivated. Current payment status: {status}.{extension_note}")
+    return redirect(url_for("member_detail", member_id=member_id, unfrozen=1))
 
 
 @app.route("/members/<int:member_id>/workout-checkin", methods=["POST"])
@@ -2826,13 +3323,14 @@ def generate_member_plan_draft(member_id):
         return redirect(url_for("members"))
     plan_type = request.form.get("plan_type", "workout")
     customizations = request.form.getlist("customizations")
-    draft = generate_plan_draft(member, plan_type, customizations)
+    preview_member = member_preview_from_form(member, request.form)
+    draft = generate_plan_draft(preview_member, plan_type, customizations)
     return render_template(
         "member_edit.html",
-        member=member,
+        member=preview_member,
         trainers=query_all("SELECT * FROM trainers WHERE active = 1 ORDER BY name"),
         member_login=get_member_login(member_id),
-        default_password=default_mobile_password(member["phone"]),
+        default_password=default_mobile_password(preview_member["phone"]),
         draft_workout_plan=draft if plan_type == "workout" else None,
         draft_diet_plan=draft if plan_type == "diet" else None,
         selected_customizations=customizations,
@@ -3062,12 +3560,37 @@ def payments():
         log_notification(member["id"], message)
         return redirect(url_for("payments"))
 
+    payment_filters = []
+    payment_params = []
+    filter_member_id = request.args.get("member_id", "").strip()
+    filter_status = request.args.get("status", "").strip()
+    filter_method = request.args.get("payment_method", "").strip()
+    filter_from = request.args.get("date_from", "").strip()
+    filter_to = request.args.get("date_to", "").strip()
+    if filter_member_id:
+        payment_filters.append("payments.member_id = ?")
+        payment_params.append(filter_member_id)
+    if filter_status:
+        payment_filters.append("payments.status = ?")
+        payment_params.append(filter_status)
+    if filter_method:
+        payment_filters.append("COALESCE(payments.payment_method, '') = ?")
+        payment_params.append(filter_method)
+    if filter_from:
+        payment_filters.append("date(COALESCE(payments.paid_on, payments.due_on)) >= date(?)")
+        payment_params.append(filter_from)
+    if filter_to:
+        payment_filters.append("date(COALESCE(payments.paid_on, payments.due_on)) <= date(?)")
+        payment_params.append(filter_to)
+    payment_where = f"WHERE {' AND '.join(payment_filters)}" if payment_filters else ""
     rows = query_all(
-        """
+        f"""
         SELECT payments.*, members.name AS member_name, members.phone
         FROM payments JOIN members ON members.id = payments.member_id
+        {payment_where}
         ORDER BY payments.id DESC
-        """
+        """,
+        tuple(payment_params),
     )
     member_rows = query_all("SELECT id, name FROM members ORDER BY name")
     renewal_rows = query_all(
@@ -3107,6 +3630,13 @@ def payments():
         renewals=renewal_rows,
         finance=finance_stats(),
         charts=finance_chart_data(),
+        payment_filters={
+            "member_id": filter_member_id,
+            "status": filter_status,
+            "payment_method": filter_method,
+            "date_from": filter_from,
+            "date_to": filter_to,
+        },
     )
 
 
@@ -3431,7 +3961,15 @@ def reports():
         "SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE status = 'Due'"
     )["total"]
     active_members = query_all(
-        "SELECT name, subscription_end, payment_status FROM members ORDER BY subscription_end ASC"
+        "SELECT id, name, phone, subscription_end, payment_status FROM members ORDER BY subscription_end ASC"
+    )
+    unpaid_members = query_all(
+        """
+        SELECT id, name, phone, subscription_end, payment_status
+        FROM members
+        WHERE COALESCE(payment_status, '') != 'Paid'
+        ORDER BY subscription_end ASC LIMIT 20
+        """
     )
     attendance_by_day = query_all(
         """
@@ -3445,7 +3983,12 @@ def reports():
         "reports.html",
         monthly_revenue=monthly_revenue,
         due_total=due_total,
+        finance=finance_stats(),
+        charts=finance_chart_data(),
+        watch=business_watch_data(),
+        freeze_watch=freeze_watch_data(12),
         active_members=active_members,
+        unpaid_members=unpaid_members,
         attendance_by_day=attendance_by_day,
     )
 
@@ -3459,25 +4002,185 @@ def diet_pdf(member_id):
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
-    y = height - 52
-    pdf.setFont("Helvetica-Bold", 18)
-    pdf.drawString(52, y, f"Diet Plan - {member['name']}")
-    y -= 30
+    margin = 44
+    y = height - margin
+    page_width = width - margin * 2
+
+    def new_page():
+        pdf.showPage()
+        pdf.setFillColorRGB(0.05, 0.09, 0.16)
+        pdf.rect(0, height - 34, width, 34, fill=True, stroke=False)
+        pdf.setFillColorRGB(1, 1, 1)
+        pdf.setFont("Helvetica-Bold", 9)
+        pdf.drawString(margin, height - 22, "StrengthLab Training and Nutrition Blueprint")
+        pdf.setFillColorRGB(0, 0, 0)
+        return height - margin
+
+    def ensure_space(current_y, needed=24):
+        return new_page() if current_y < margin + needed else current_y
+
+    def draw_card(x, current_y, card_width, card_height, title, value, note=""):
+        pdf.setFillColorRGB(0.96, 0.98, 1)
+        pdf.setStrokeColorRGB(0.82, 0.87, 0.94)
+        pdf.roundRect(x, current_y - card_height, card_width, card_height, 7, fill=True, stroke=True)
+        pdf.setFillColorRGB(0.39, 0.45, 0.55)
+        pdf.setFont("Helvetica-Bold", 7.5)
+        pdf.drawString(x + 10, current_y - 15, title.upper())
+        pdf.setFillColorRGB(0.06, 0.09, 0.16)
+        pdf.setFont("Helvetica-Bold", 12)
+        pdf.drawString(x + 10, current_y - 32, str(value)[:24])
+        if note:
+            pdf.setFillColorRGB(0.39, 0.45, 0.55)
+            pdf.setFont("Helvetica", 7.5)
+            pdf.drawString(x + 10, current_y - 46, str(note)[:34])
+        pdf.setFillColorRGB(0, 0, 0)
+
+    def draw_section_header(title, current_y):
+        current_y = ensure_space(current_y, 34)
+        pdf.setFillColorRGB(0.12, 0.25, 0.69)
+        pdf.roundRect(margin, current_y - 18, width - margin * 2, 24, 5, fill=True, stroke=False)
+        pdf.setFillColorRGB(1, 1, 1)
+        pdf.setFont("Helvetica-Bold", 11)
+        pdf.drawString(margin + 10, current_y - 10, title)
+        pdf.setFillColorRGB(0, 0, 0)
+        return current_y - 34
+
+    def draw_wrapped(text, current_y, font="Helvetica", size=9.5, leading=13, width_chars=92, x=None):
+        x = x or margin
+        pdf.setFont(font, size)
+        for paragraph in (text or "").splitlines():
+            lines = textwrap.wrap(paragraph, width=width_chars) or [""]
+            for line in lines:
+                current_y = ensure_space(current_y, leading)
+                pdf.drawString(x, current_y, line)
+                current_y -= leading
+            if paragraph == "":
+                current_y -= 4
+        return current_y
+
+    def draw_instruction_panel(title, lines, current_y):
+        panel_height = 82
+        current_y = ensure_space(current_y, panel_height + 12)
+        pdf.setFillColorRGB(0.98, 0.99, 1)
+        pdf.setStrokeColorRGB(0.82, 0.87, 0.94)
+        pdf.roundRect(margin, current_y - panel_height, page_width, panel_height, 7, fill=True, stroke=True)
+        pdf.setFillColorRGB(0.06, 0.09, 0.16)
+        pdf.setFont("Helvetica-Bold", 11)
+        pdf.drawString(margin + 12, current_y - 17, title[:70])
+        pdf.setFont("Helvetica", 8.2)
+        text_y = current_y - 32
+        for line in lines[:4]:
+            wrapped = textwrap.wrap(line.replace("- ", ""), width=82)[:2]
+            for item in wrapped:
+                pdf.drawString(margin + 12, text_y, f"- {item}")
+                text_y -= 10
+        pdf.setStrokeColorRGB(0.12, 0.25, 0.69)
+        box_x = margin + page_width - 110
+        pdf.roundRect(box_x, current_y - 68, 92, 42, 5, fill=False, stroke=True)
+        pdf.setFillColorRGB(0.12, 0.25, 0.69)
+        pdf.setFont("Helvetica-Bold", 7)
+        pdf.drawCentredString(box_x + 46, current_y - 42, "EXERCISE PANEL")
+        pdf.setFillColorRGB(0.39, 0.45, 0.55)
+        pdf.setFont("Helvetica", 6.8)
+        pdf.drawCentredString(box_x + 46, current_y - 54, "photo / form cue")
+        return current_y - panel_height - 10
+
+    def split_plan_sections(text):
+        sections = []
+        current_title = "Plan overview"
+        current_lines = []
+        for raw_line in (text or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            is_heading = (
+                line.endswith(":")
+                or line.startswith("Day ")
+                or line.startswith("Session ")
+                or line.startswith("Recipe")
+                or (len(line) < 58 and not line.startswith("- ") and ":" not in line)
+            )
+            if is_heading and current_lines:
+                sections.append((current_title.rstrip(":"), current_lines))
+                current_title = line.rstrip(":")
+                current_lines = []
+            elif is_heading:
+                current_title = line.rstrip(":")
+            else:
+                current_lines.append(line)
+        if current_lines:
+            sections.append((current_title.rstrip(":"), current_lines))
+        return sections
+
+    def draw_recipe_cards(text, current_y):
+        sections = split_plan_sections(text)
+        recipe_sections = [(title, lines) for title, lines in sections if any("ingredients:" in line.lower() or "macros:" in line.lower() for line in lines)]
+        if not recipe_sections:
+            return draw_wrapped(text or "No diet plan generated yet.", current_y)
+        for title, lines in recipe_sections:
+            current_y = ensure_space(current_y, 104)
+            pdf.setFillColorRGB(1, 1, 1)
+            pdf.setStrokeColorRGB(0.82, 0.87, 0.94)
+            pdf.roundRect(margin, current_y - 92, page_width, 92, 7, fill=True, stroke=True)
+            pdf.setFillColorRGB(0.12, 0.25, 0.69)
+            pdf.setFont("Helvetica-Bold", 10)
+            pdf.drawString(margin + 12, current_y - 16, title[:78])
+            line_y = current_y - 31
+            pdf.setFillColorRGB(0.06, 0.09, 0.16)
+            pdf.setFont("Helvetica", 7.8)
+            for line in lines[:6]:
+                for wrapped in textwrap.wrap(line, width=92)[:2]:
+                    pdf.drawString(margin + 12, line_y, wrapped)
+                    line_y -= 9
+            current_y -= 104
+        return current_y
+
+    pdf.setFillColorRGB(0.03, 0.05, 0.10)
+    pdf.rect(0, height - 92, width, 92, fill=True, stroke=False)
+    pdf.setFillColorRGB(1, 1, 1)
+    pdf.setFont("Helvetica-Bold", 19)
+    pdf.drawString(margin, height - 42, "StrengthLab Member Blueprint")
     pdf.setFont("Helvetica", 10)
-    pdf.drawString(52, y, f"Goal: {member['goal'] or 'General fitness'} | Plan: {member['plan_name']}")
-    y -= 28
-    pdf.setFont("Helvetica", 11)
-    for paragraph in (member["diet_plan"] or "No diet plan generated yet.").splitlines():
-        for line in textwrap.wrap(paragraph, width=88):
-            if y < 60:
-                pdf.showPage()
-                y = height - 52
-                pdf.setFont("Helvetica", 11)
-            pdf.drawString(52, y, line)
-            y -= 18
+    pdf.drawString(margin, height - 62, f"{member['name']} | {member['plan_name']} | Workout: {member['workout_subscription'] or 'Regular'} | Diet: {member['diet_subscription'] or 'None'}")
+    pdf.drawString(margin, height - 78, f"Goal: {member['primary_fitness_goal'] or member['goal'] or 'General fitness'}")
+    pdf.setFillColorRGB(0, 0, 0)
+    y = height - 120
+
+    card_gap = 10
+    card_width = (page_width - card_gap * 2) / 3
+    draw_card(margin, y, card_width, 56, "Membership", member["plan_name"] or "-", member["payment_status"] or "-")
+    draw_card(margin + card_width + card_gap, y, card_width, 56, "Renewal", member["subscription_end"] or "Not set", member["workout_subscription"] or "Regular")
+    draw_card(margin + (card_width + card_gap) * 2, y, card_width, 56, "Body", f"{member['weight_kg'] or '-'} kg", f"{member['height_cm'] or '-'} cm")
+    y -= 78
+
+    y = draw_section_header("Workout Plan", y)
+    workout_sections = split_plan_sections(member["workout_plan"] or "No workout plan generated yet.")
+    if workout_sections:
+        for title, lines in workout_sections[:12]:
+            y = draw_instruction_panel(title, lines, y)
+    else:
+        y = draw_wrapped("No workout plan generated yet.", y)
+    y -= 8
+    y = draw_section_header("Nutrition Recipe Cards", y)
+    y = draw_recipe_cards(member["diet_plan"] or "No diet plan generated yet.", y)
+    y -= 8
+    y = draw_section_header("Safety and Coach Notes", y)
+    y = draw_instruction_panel(
+        "Stop or reduce intensity immediately",
+        [
+            "Sharp pain, dizziness, chest pain, numbness, severe shortness of breath, or worsening joint pain are stop signs.",
+            "Keep 1-4 reps in reserve unless a qualified coach gives a specific reason to push harder.",
+            "Members with medical conditions should follow doctor clearance and coach modifications.",
+        ],
+        y,
+    )
+    y = draw_wrapped(
+        "This plan is for gym coaching and education. Stop sharp pain, dizziness, chest pain, numbness, or worsening joint pain. Medical conditions require professional clearance.",
+        y,
+    )
     pdf.save()
     buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name=f"{member['name'].replace(' ', '_')}_diet_plan.pdf", mimetype="application/pdf")
+    return send_file(buffer, as_attachment=True, download_name=f"{member['name'].replace(' ', '_')}_blueprint.pdf", mimetype="application/pdf")
 
 
 if __name__ == "__main__":
