@@ -29,6 +29,8 @@ PAYMENT_REMINDER_DAYS = int(os.environ.get("PAYMENT_REMINDER_DAYS", "3"))
 PAYMENT_REMINDER_INTERVAL_SECONDS = int(os.environ.get("PAYMENT_REMINDER_INTERVAL_SECONDS", "3600"))
 _payment_automation_started = False
 _payment_automation_lock = threading.Lock()
+_startup_ready = False
+_startup_lock = threading.Lock()
 
 MEMBERSHIP_PLANS = [
     {"name": "Monthly", "days": 30, "amount": 2000},
@@ -2288,6 +2290,23 @@ def start_payment_automation():
         _payment_automation_started = True
         thread = threading.Thread(target=payment_reminder_worker, daemon=True)
         thread.start()
+
+
+def ensure_startup_ready():
+    global _startup_ready
+    if _startup_ready:
+        return
+    with _startup_lock:
+        if _startup_ready:
+            return
+        init_db()
+        start_payment_automation()
+        _startup_ready = True
+
+
+@app.before_request
+def _bootstrap_app():
+    ensure_startup_ready()
 
 
 def current_user():
