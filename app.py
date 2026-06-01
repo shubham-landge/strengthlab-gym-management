@@ -4154,6 +4154,31 @@ def diet_pdf(member_id):
             current_y -= 104
         return current_y
 
+    def draw_recipe_cards_from_json(diet_json, current_y):
+        meals = diet_json.get("meals") if isinstance(diet_json, dict) else None
+        if not meals:
+            return current_y
+        for meal in meals[:10]:
+            title = meal.get("title") or "Meal"
+            lines = []
+            metric_ingredients = meal.get("metric_ingredients")
+            if metric_ingredients:
+                lines.append(f"Ingredients: {metric_ingredients}")
+            for step in meal.get("cooking_steps", [])[:4]:
+                lines.append(step)
+            if meal.get("local_alternatives"):
+                lines.append(f"Alternatives: {meal.get('local_alternatives')}")
+            macros = []
+            for key, label in [("calories", "Calories"), ("protein_g", "Protein"), ("carbs_g", "Carbs"), ("fat_g", "Fat")]:
+                value = meal.get(key)
+                if value not in (None, ""):
+                    suffix = " kcal" if key == "calories" else " g"
+                    macros.append(f"{label}: {value}{suffix}")
+            if macros:
+                lines.append(" | ".join(macros))
+            current_y = draw_instruction_panel(title, lines or ["No details provided."], current_y)
+        return current_y
+
     pdf.setFillColorRGB(0.03, 0.05, 0.10)
     pdf.rect(0, height - 92, width, 92, fill=True, stroke=False)
     pdf.setFillColorRGB(1, 1, 1)
@@ -4181,7 +4206,17 @@ def diet_pdf(member_id):
         y = draw_wrapped("No workout plan generated yet.", y)
     y -= 8
     y = draw_section_header("Nutrition Recipe Cards", y)
-    y = draw_recipe_cards(member["diet_plan"] or "No diet plan generated yet.", y)
+    diet_text = member["diet_plan"] or ""
+    diet_json = None
+    if member["diet_plan_json"]:
+        try:
+            diet_json = json.loads(member["diet_plan_json"])
+        except (TypeError, ValueError):
+            diet_json = None
+    if isinstance(diet_json, dict) and diet_json.get("meals"):
+        y = draw_recipe_cards_from_json(diet_json, y)
+    else:
+        y = draw_recipe_cards(diet_text or "No diet plan generated yet.", y)
     y -= 8
     y = draw_section_header("Safety and Coach Notes", y)
     y = draw_instruction_panel(
