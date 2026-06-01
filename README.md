@@ -2,6 +2,11 @@
 
 Python/Flask gym management dashboard for local network deployment.
 
+## Prerequisites
+
+- Python `3.10+` (recommended `3.11`)
+- Git `2.40+`
+
 ## Features
 
 - Admin dashboard for members, trainers, equipment, attendance, payments, reports, and announcements.
