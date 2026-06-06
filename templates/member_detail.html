@@ -6,6 +6,10 @@
     {% if current_user.role == "admin" %}
     <a class="button" href="{{ url_for('edit_member', member_id=member.id) }}">Edit profile</a>
     {% endif %}
+    {% if current_user.role in ["admin", "trainer"] %}
+    <a class="button" href="{{ url_for('recommendations_review', member_id=member.id) }}">Review Recommendations</a>
+    {% endif %}
+    <a class="button" href="{{ url_for('recommendations', member_id=member.id) }}">Wellness Recommendations</a>
     <a class="button" href="{{ url_for('diet_pdf', member_id=member.id) }}">Download blueprint PDF</a>
     {% if current_user.role in ["admin", "trainer"] %}
     <a class="button primary" target="_blank" href="{{ wa_link(member.phone, 'Hi ' ~ member.name ~ ', your progress update and diet plan are ready. Please check your PDF from the gym desk.') }}">WhatsApp update</a>
@@ -310,6 +314,72 @@
       </div>
     </div>
 
+    <div class="form-block">
+      <h3>8. Detailed Health Profile & Intake</h3>
+      <div class="grid-form">
+        <label>Sleep quality
+          <select name="sleep_quality">
+            <option value="" {% if not health_profile or not health_profile.sleep_quality %}selected{% endif %}>Select quality</option>
+            <option value="Good" {% if health_profile and health_profile.sleep_quality == 'Good' %}selected{% endif %}>Good</option>
+            <option value="Fair" {% if health_profile and health_profile.sleep_quality == 'Fair' %}selected{% endif %}>Fair</option>
+            <option value="Poor" {% if health_profile and health_profile.sleep_quality == 'Poor' %}selected{% endif %}>Poor</option>
+          </select>
+        </label>
+        <label>Stress level
+          <select name="stress_level">
+            <option value="" {% if not health_profile or not health_profile.stress_level %}selected{% endif %}>Select stress</option>
+            <option value="Low" {% if health_profile and health_profile.stress_level == 'Low' %}selected{% endif %}>Low</option>
+            <option value="Medium" {% if health_profile and health_profile.stress_level == 'Medium' %}selected{% endif %}>Medium</option>
+            <option value="High" {% if health_profile and health_profile.stress_level == 'High' %}selected{% endif %}>High</option>
+          </select>
+        </label>
+        <label>Blood pressure
+          <select name="blood_pressure">
+            <option value="" {% if not health_profile or not health_profile.blood_pressure %}selected{% endif %}>Select pressure</option>
+            <option value="Normal" {% if health_profile and health_profile.blood_pressure == 'Normal' %}selected{% endif %}>Normal</option>
+            <option value="High" {% if health_profile and health_profile.blood_pressure == 'High' %}selected{% endif %}>High</option>
+            <option value="Low" {% if health_profile and health_profile.blood_pressure == 'Low' %}selected{% endif %}>Low</option>
+          </select>
+        </label>
+        <label>Sunlight exposure
+          <select name="sunlight_exposure">
+            <option value="" {% if not health_profile or not health_profile.sunlight_exposure %}selected{% endif %}>Select exposure</option>
+            <option value="Low" {% if health_profile and health_profile.sunlight_exposure == 'Low' %}selected{% endif %}>Low (mostly indoor)</option>
+            <option value="Moderate" {% if health_profile and health_profile.sunlight_exposure == 'Moderate' %}selected{% endif %}>Moderate</option>
+            <option value="High" {% if health_profile and health_profile.sunlight_exposure == 'High' %}selected{% endif %}>High (outdoor)</option>
+          </select>
+        </label>
+        <label>Alcohol intake
+          <select name="alcohol_intake">
+            <option value="" {% if not health_profile or not health_profile.alcohol_intake %}selected{% endif %}>Select intake</option>
+            <option value="None" {% if health_profile and health_profile.alcohol_intake == 'None' %}selected{% endif %}>None</option>
+            <option value="Occasional" {% if health_profile and health_profile.alcohol_intake == 'Occasional' %}selected{% endif %}>Occasional</option>
+            <option value="Regular" {% if health_profile and health_profile.alcohol_intake == 'Regular' %}selected{% endif %}>Regular</option>
+          </select>
+        </label>
+        <label>Pregnancy / Lactation status
+          <select name="pregnancy_lactation_status">
+            <option value="" {% if not health_profile or not health_profile.pregnancy_lactation_status %}selected{% endif %}>Select status</option>
+            <option value="No" {% if health_profile and health_profile.pregnancy_lactation_status == 'No' %}selected{% endif %}>No / Not Applicable</option>
+            <option value="Yes" {% if health_profile and health_profile.pregnancy_lactation_status == 'Yes' %}selected{% endif %}>Yes / Active</option>
+          </select>
+        </label>
+        
+        <label class="span-3">Current medications<input name="medications" value="{{ health_profile.medications if health_profile else '' }}" placeholder="Metformin, Omeprazole, etc."></label>
+        <label class="span-3">Allergies<input name="allergies" value="{{ health_profile.allergies if health_profile else '' }}" placeholder="Peanuts, penicillin, dairy, etc."></label>
+        <label class="span-3">Current supplements being taken<input name="current_supplements" value="{{ health_profile.current_supplements if health_profile else '' }}" placeholder="Whey, multivitamin, fish oil, etc."></label>
+        <label class="span-3">Recent lab values (e.g. B12: 250 pg/mL, Vit D: 22 ng/mL)<textarea name="recent_lab_values" rows="2">{{ health_profile.recent_lab_values if health_profile else '' }}</textarea></label>
+      </div>
+
+      <div class="checkbox-grid" style="margin-top: 15px;">
+        <label class="check"><input type="checkbox" name="vegetarian_vegan" value="1" {% if health_profile and health_profile.vegetarian_vegan == 1 %}checked{% endif %}> Vegetarian / Vegan diet</label>
+        <label class="check"><input type="checkbox" name="kidney_disease" value="1" {% if health_profile and health_profile.kidney_disease == 1 %}checked{% endif %}> Kidney disease flag</label>
+        <label class="check"><input type="checkbox" name="liver_disease" value="1" {% if health_profile and health_profile.liver_disease == 1 %}checked{% endif %}> Liver disease flag</label>
+        <label class="check"><input type="checkbox" name="thyroid_condition" value="1" {% if health_profile and health_profile.thyroid_condition == 1 %}checked{% endif %}> Thyroid condition flag</label>
+        <label class="check"><input type="checkbox" name="diabetes_prediabetes" value="1" {% if health_profile and health_profile.diabetes_prediabetes == 1 %}checked{% endif %}> Diabetes / Pre-diabetes flag</label>
+      </div>
+    </div>
+
     <button class="button primary" type="submit">Save questionnaire</button>
   </form>
   {% else %}
@@ -321,11 +391,35 @@
     <div><span>Prep</span><strong>{{ member.cooking_preference or "Not filled" }}</strong></div>
     <div><span>Location</span><strong>{{ member.primary_location or "Not filled" }}</strong></div>
   </div>
+  <div class="profile-readonly" style="margin-top: 15px;">
+    <div><span>Sleep quality</span><strong>{{ health_profile.sleep_quality or "Not filled" }}</strong></div>
+    <div><span>Stress level</span><strong>{{ health_profile.stress_level or "Not filled" }}</strong></div>
+    <div><span>Blood pressure</span><strong>{{ health_profile.blood_pressure or "Not filled" }}</strong></div>
+    <div><span>Sunlight</span><strong>{{ health_profile.sunlight_exposure or "Not filled" }}</strong></div>
+    <div><span>Alcohol intake</span><strong>{{ health_profile.alcohol_intake or "Not filled" }}</strong></div>
+    <div><span>Veg/Vegan</span><strong>{{ 'Yes' if health_profile and health_profile.vegetarian_vegan == 1 else 'No' }}</strong></div>
+  </div>
   <div class="readonly-lists">
     <p><strong>Food exclusions:</strong> {{ selected_food_exclusions|join(", ") if selected_food_exclusions else "None recorded" }}</p>
     <p><strong>Medical conditions:</strong> {{ selected_medical_conditions|join(", ") if selected_medical_conditions else "None recorded" }}</p>
     <p><strong>Supplements:</strong> {{ selected_supplements|join(", ") if selected_supplements else "None recorded" }}</p>
     <p><strong>Other avoided foods:</strong> {{ member.other_foods_avoided or "None recorded" }}</p>
+    <hr style="border: 0; border-top: 1px solid var(--line); margin: 15px 0;">
+    <p><strong>Medications:</strong> {{ health_profile.medications or "None recorded" }}</p>
+    <p><strong>Allergies:</strong> {{ health_profile.allergies or "None recorded" }}</p>
+    <p><strong>Current Supplements:</strong> {{ health_profile.current_supplements or "None recorded" }}</p>
+    <p><strong>Recent Labs:</strong> {{ health_profile.recent_lab_values or "None recorded" }}</p>
+    <p><strong>Medical Flags:</strong> 
+      {% set flags = [] %}
+      {% if health_profile %}
+        {% if health_profile.kidney_disease == 1 %}{% set _ = flags.append("Kidney Disease") %}{% endif %}
+        {% if health_profile.liver_disease == 1 %}{% set _ = flags.append("Liver Disease") %}{% endif %}
+        {% if health_profile.thyroid_condition == 1 %}{% set _ = flags.append("Thyroid Condition") %}{% endif %}
+        {% if health_profile.diabetes_prediabetes == 1 %}{% set _ = flags.append("Diabetes/Pre-diabetes") %}{% endif %}
+        {% if health_profile.pregnancy_lactation_status == "Yes" %}{% set _ = flags.append("Pregnancy/Lactation") %}{% endif %}
+      {% endif %}
+      {{ flags|join(", ") if flags else "None" }}
+    </p>
   </div>
   {% endif %}
 </section>

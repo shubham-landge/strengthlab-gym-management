@@ -76,6 +76,17 @@
         WhatsApp
       </a>
       {% endif %}
+      
+      {% if current_user.role in ["admin", "trainer"] %}
+      <a href="{{ url_for('content_insights') }}" {% if request.endpoint == "content_insights" %}class="active"{% endif %}>
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        Content Intelligence
+      </a>
+      <a href="{{ url_for('supplements') }}" {% if request.endpoint == "supplements" %}class="active"{% endif %}>
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+        Supplement Library
+      </a>
+      {% endif %}
     </nav>
 
     <div class="sidebar-footer">
@@ -141,6 +152,10 @@
         <a href="{{ url_for('trainers') }}">Trainers</a>
         <a href="{{ url_for('equipment') }}">Equipment</a>
         <a href="{{ url_for('announcements') }}">WhatsApp</a>
+        {% endif %}
+        {% if current_user.role in ["admin", "trainer"] %}
+        <a href="{{ url_for('content_insights') }}">Content Intelligence</a>
+        <a href="{{ url_for('supplements') }}">Supplement Library</a>
         {% endif %}
         <button type="button" id="mobile-theme-toggle" class="theme-toggle">Light mode</button>
         <form method="post" action="{{ url_for('logout') }}" class="logout-form">

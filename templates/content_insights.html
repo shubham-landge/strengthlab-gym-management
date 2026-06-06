@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">Admin & Trainer command center</p>
+    <h1>Content Intelligence</h1>
+  </div>
+  <div class="actions">
+    <a class="button" href="#import-drawer">Import CSV rows</a>
+    <form method="post" action="{{ url_for('content_insights') }}" style="display:inline;">
+      <input type="hidden" name="action" value="seed_defaults">
+      <button class="button warn-button" type="submit" onclick="return confirm('Are you sure you want to clear and re-seed defaults?');">Reset default insights</button>
+    </form>
+  </div>
+</header>
+
+<!-- KPI Dashboard Grid -->
+<section class="athlete-grid">
+  <article class="athlete-card">
+    <span>Total Video Views</span>
+    <strong>{{ metrics.total_views }}</strong>
+    <small>Estimated search demand</small>
+  </article>
+  <article class="athlete-card">
+    <span>Total Reactions</span>
+    <strong>{{ metrics.total_reactions }}</strong>
+    <small>Estimated engagement</small>
+  </article>
+  <article class="athlete-card">
+    <span>Health & Wellness</span>
+    <strong>{{ metrics.health_count }} videos</strong>
+    <small>81% engagement share</small>
+  </article>
+  <article class="athlete-card">
+    <span>Productivity & Habits</span>
+    <strong>{{ metrics.prod_count }} videos</strong>
+    <small>Habit demand insights</small>
+  </article>
+</section>
+
+<!-- Insights Table Panel -->
+<section class="panel" style="margin-top: 20px;">
+  <div class="section-title">
+    <h2>Video Research & Trend Insights</h2>
+    <small>Analyzing {{ metrics.total_count }} short-form fitness videos to identify user interests. Do not treat these as medical facts.</small>
+  </div>
+  
+  <div class="table-wrap flat-table">
+    <table>
+      <thead>
+        <tr>
+          <th>Video ID</th>
+          <th>Title & Summary</th>
+          <th>Category</th>
+          <th>Estimated Views</th>
+          <th>Extracted Topics</th>
+          <th>Safety Classification</th>
+          <th>Evidence Grade</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for insight in insights %}
+        <tr>
+          <td><code>{{ insight.external_video_id or "N/A" }}</code></td>
+          <td>
+            <strong>{{ insight.title }}</strong>
+            <p style="margin: 4px 0 0 0; font-size: 0.8rem; color: var(--muted);">{{ insight.raw_summary }}</p>
+          </td>
+          <td>{{ insight.category }}</td>
+          <td>{{ (insight.estimated_views / 1000000)|round(1) }}M</td>
+          <td>
+            {% for topic in (insight.extracted_topics or "").split(",") %}
+            <span class="pill" style="font-size: 0.7rem; padding: 2px 6px; margin-right: 2px;">{{ topic.strip() }}</span>
+            {% endfor %}
+          </td>
+          <td>
+            <span class="pill {% if insight.safety_status == 'approved_general_wellness' %}good{% elif insight.safety_status == 'medical_sensitive' %}warn{% else %}accent{% endif %}">
+              {{ insight.safety_status|replace('_', ' ') }}
+            </span>
+          </td>
+          <td>
+            <span class="pill {% if insight.evidence_status == 'supported' %}good{% elif insight.evidence_status == 'unsafe_claim' %}warn{% else %}accent{% endif %}">
+              {{ insight.evidence_status|replace('_', ' ') }}
+            </span>
+          </td>
+          <td>
+            <a class="link-button" href="#edit-{{ insight.id }}">Modify Status</a>
+            
+            <!-- Inlined Edit Modal Overlay -->
+            <div id="edit-{{ insight.id }}" class="modal-overlay">
+              <div class="modal-content panel">
+                <h3>Update Safety Classification</h3>
+                <p><strong>{{ insight.title }}</strong></p>
+                <form method="post" action="{{ url_for('content_insights') }}">
+                  <input type="hidden" name="action" value="update_status">
+                  <input type="hidden" name="insight_id" value="{{ insight.id }}">
+                  
+                  <label>Safety status
+                    <select name="safety_status">
+                      <option value="needs_review" {% if insight.safety_status == 'needs_review' %}selected{% endif %}>Needs review</option>
+                      <option value="approved_general_wellness" {% if insight.safety_status == 'approved_general_wellness' %}selected{% endif %}>Approved general wellness</option>
+                      <option value="medical_sensitive" {% if insight.safety_status == 'medical_sensitive' %}selected{% endif %}>Medical sensitive</option>
+                      <option value="blocked" {% if insight.safety_status == 'blocked' %}selected{% endif %}>Blocked</option>
+                    </select>
+                  </label>
+                  
+                  <label style="margin-top: 10px; display: block;">Evidence status
+                    <select name="evidence_status">
+                      <option value="unverified" {% if insight.evidence_status == 'unverified' %}selected{% endif %}>Unverified</option>
+                      <option value="supported" {% if insight.evidence_status == 'supported' %}selected{% endif %}>Supported</option>
+                      <option value="mixed" {% if insight.evidence_status == 'mixed' %}selected{% endif %}>Mixed</option>
+                      <option value="insufficient" {% if insight.evidence_status == 'insufficient' %}selected{% endif %}>Insufficient</option>
+                      <option value="unsafe_claim" {% if insight.evidence_status == 'unsafe_claim' %}selected{% endif %}>Unsafe claim</option>
+                    </select>
+                  </label>
+                  
+                  <div style="margin-top: 15px; display: flex; gap: 10px;">
+                    <button class="button primary" type="submit">Save Status</button>
+                    <a href="#" class="button">Cancel</a>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="8" class="empty">No insights loaded yet. Paste or seed default video data.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- CSS-based Import Drawer -->
+<div id="import-drawer" class="drawer-overlay">
+  <div class="drawer-panel panel">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+      <h2>Import Video Insights</h2>
+      <a href="#" class="close-btn" style="font-size:1.5rem; text-decoration:none; color:var(--ink);">&times;</a>
+    </div>
+    <form method="post" action="{{ url_for('content_insights') }}">
+      <input type="hidden" name="action" value="import_csv">
+      
+      <p style="font-size:0.8rem; color:var(--muted); margin-bottom:10px;">
+        Paste CSV rows (without headers). Formatting options:<br>
+        <code>external_video_id, title, category, estimated_views, reactions, raw_summary, extracted_topics</code>
+      </p>
+      
+      <textarea name="csv_data" rows="12" placeholder="e.g.
+HW01,How hydration affects performance,Health, Nutrition & Wellness,15000000,180000,Water is key,hydration,recovery" style="width:100%; font-family:monospace; margin-bottom:15px;"></textarea>
+      
+      <button class="button primary" type="submit">Import insights</button>
+    </form>
+  </div>
+</div>
+
+<style>
+/* CSS Modal & Drawer Styling */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(2px);
+  z-index: 1000;
+  justify-content: center;
+  align-items: center;
+}
+.modal-overlay:target {
+  display: flex;
+}
+.modal-content {
+  width: 90%;
+  max-width: 400px;
+  padding: 20px;
+  border-radius: var(--radius);
+}
+.drawer-overlay {
+  display: none;
+  position: fixed;
+  top: 0; right: 0; bottom: 0; left: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 1000;
+}
+.drawer-overlay:target {
+  display: block;
+}
+.drawer-panel {
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  width: 90%;
+  max-width: 480px;
+  height: 100%;
+  overflow-y: auto;
+  border-radius: 0;
+  border-left: 1px solid var(--line);
+  box-shadow: var(--shadow-md);
+  padding: 24px;
+  background: var(--panel);
+}
+</style>
+{% endblock %}

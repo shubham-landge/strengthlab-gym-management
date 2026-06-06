@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">Trainer review dashboard</p>
+    <h1>Review Recommendations: {{ member.name }}</h1>
+  </div>
+  <div class="actions">
+    <form method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}" style="display:inline;">
+      <input type="hidden" name="action" value="generate">
+      <button class="button" type="submit">Refresh Drafts</button>
+    </form>
+    
+    <form method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}" style="display:inline;">
+      <input type="hidden" name="action" value="send_to_member">
+      <button class="button primary" type="submit" {% if sent_count == 0 %}disabled{% endif %}>Send to Member</button>
+    </form>
+
+    <a class="button" href="{{ url_for('recommendations_pdf', member_id=member.id) }}">Export PDF</a>
+    <a class="button" target="_blank" href="{{ whatsapp_link }}">Send WhatsApp</a>
+  </div>
+</header>
+
+<section class="member-hero" style="margin-bottom: 20px;">
+  <div class="member-hero-main">
+    <p class="eyebrow">Biometric Summary</p>
+    <h2>{{ member.primary_fitness_goal or member.goal or "General Fitness" }}</h2>
+    <div class="hero-tags">
+      <span>{{ member.age or "N/A" }} years</span>
+      <span>{{ member.weight_kg or "N/A" }} kg</span>
+      <span>{{ member.height_cm or "N/A" }} cm</span>
+      <span>{{ member.dietary_style or "Diet not set" }}</span>
+    </div>
+  </div>
+  <div class="member-hero-side">
+    <span>Reviewed Batch</span>
+    <strong>{{ sent_count }} Approved</strong>
+    <small>Ready to send or sent</small>
+  </div>
+</section>
+
+<!-- Recommendations Queue -->
+<section class="panel">
+  <div class="section-title">
+    <h2>Pending & Active Recommendations</h2>
+    <small>Trainers must verify safety warnings and clinical risk level before sending to member.</small>
+  </div>
+
+  <div style="display:flex; flex-direction:column; gap:16px;">
+    {% for rec in recommendations %}
+    <div class="recommendation-card" style="border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; background: var(--panel-2); display: flex; flex-direction: column; gap: 10px; position: relative; {% if rec.status == 'rejected' %}opacity: 0.5;{% endif %}">
+      
+      <!-- Card Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h3 style="margin:0;">{{ rec.title }}</h3>
+        <div>
+          <span class="pill" style="font-size:0.75rem; text-transform:uppercase;">{{ rec.recommendation_type }}</span>
+          <span class="pill {% if rec.status == 'sent' %}good{% elif rec.status == 'approved' %}good{% elif rec.status == 'rejected' %}warn{% else %}accent{% endif %}" style="font-size:0.75rem; text-transform:uppercase;">
+            {{ rec.status }}
+          </span>
+        </div>
+      </div>
+
+      <!-- Recommendation Fields -->
+      <p style="font-size:0.9rem; color:var(--muted); margin:0;"><strong>Why appeared:</strong> {{ rec.why_appeared }}</p>
+      <p style="font-size:0.9rem; margin:0;"><strong>First step (Food/Lifestyle):</strong> {{ rec.first_step }}</p>
+      
+      {% if rec.supplement_candidate %}
+      <p style="font-size:0.9rem; margin:0;"><strong>Supplement option:</strong> <code>{{ rec.supplement_candidate }}</code></p>
+      {% endif %}
+      
+      {% if rec.suggested_lab and rec.suggested_lab != "Not required for general use." %}
+      <p style="font-size:0.9rem; margin:0; color:var(--warn);"><strong>Suggested lab check:</strong> {{ rec.suggested_lab }}</p>
+      {% endif %}
+
+      <p style="font-size:0.8rem; margin:0; color:var(--brand-red);"><strong>Safety Gate Note:</strong> {{ rec.safety_notes }}</p>
+
+      <div style="font-size:0.8rem; color:var(--muted); margin-top:5px; border-top: 1px solid var(--line); padding-top:8px;">
+        Level: <strong>{{ rec.recommendation_level|replace('_', ' ')|title }}</strong> | Confidence: <strong>{{ rec.confidence_score }}</strong>
+      </div>
+
+      <!-- Action Buttons -->
+      <div style="display:flex; gap:10px; margin-top:10px;">
+        {% if rec.status != 'approved' and rec.status != 'sent' %}
+        <form method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}" style="display:inline;">
+          <input type="hidden" name="action" value="approve">
+          <input type="hidden" name="rec_id" value="{{ rec.id }}">
+          <button class="button primary" style="padding: 6px 12px; font-size:0.8rem;" type="submit">Approve</button>
+        </form>
+        {% endif %}
+        
+        {% if rec.status != 'rejected' %}
+        <form method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}" style="display:inline;">
+          <input type="hidden" name="action" value="reject">
+          <input type="hidden" name="rec_id" value="{{ rec.id }}">
+          <button class="button" style="padding: 6px 12px; font-size:0.8rem;" type="submit">Reject</button>
+        </form>
+        {% endif %}
+
+        <a class="button" style="padding: 6px 12px; font-size:0.8rem;" href="#edit-rec-{{ rec.id }}">Edit Content</a>
+      </div>
+
+      <!-- Edit Modal Overlay for Recommendation -->
+      <div id="edit-rec-{{ rec.id }}" class="modal-overlay">
+        <div class="modal-content panel" style="max-width: 500px;">
+          <h3>Edit Recommendation</h3>
+          <form class="grid-form" method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}">
+            <input type="hidden" name="action" value="edit">
+            <input type="hidden" name="rec_id" value="{{ rec.id }}">
+
+            <label>Title<input name="title" value="{{ rec.title }}" required></label>
+            <label>Why Appeared<input name="why_appeared" value="{{ rec.why_appeared }}" required></label>
+            <label>First Step (Food / Habit)<textarea name="first_step" rows="2" required>{{ rec.first_step }}</textarea></label>
+            <label>Supplement Option<input name="supplement_candidate" value="{{ rec.supplement_candidate or '' }}"></label>
+            <label>Food Alternative<input name="food_first_alternative" value="{{ rec.food_first_alternative or '' }}"></label>
+            <label>Suggested Lab<input name="suggested_lab" value="{{ rec.suggested_lab or '' }}"></label>
+            <label>Safety Notes / warnings<textarea name="safety_notes" rows="2" required>{{ rec.safety_notes }}</textarea></label>
+            
+            <label>Risk Level
+              <select name="recommendation_level">
+                <option value="education_only" {% if rec.recommendation_level == 'education_only' %}selected{% endif %}>Education only</option>
+                <option value="food_first" {% if rec.recommendation_level == 'food_first' %}selected{% endif %}>Food-first</option>
+                <option value="supplement_candidate" {% if rec.recommendation_level == 'supplement_candidate' %}selected{% endif %}>Supplement candidate</option>
+                <option value="lab_suggested" {% if rec.recommendation_level == 'lab_suggested' %}selected{% endif %}>Lab suggested</option>
+                <option value="clinician_review_required" {% if rec.recommendation_level == 'clinician_review_required' %}selected{% endif %}>Clinician review required</option>
+                <option value="do_not_recommend" {% if rec.recommendation_level == 'do_not_recommend' %}selected{% endif %}>Do not recommend</option>
+              </select>
+            </label>
+            
+            <label>Confidence
+              <select name="confidence_score">
+                <option value="High" {% if rec.confidence_score == 'High' %}selected{% endif %}>High</option>
+                <option value="Medium" {% if rec.confidence_score == 'Medium' %}selected{% endif %}>Medium</option>
+                <option value="Low" {% if rec.confidence_score == 'Low' %}selected{% endif %}>Low</option>
+              </select>
+            </label>
+
+            <div style="margin-top: 15px; display: flex; gap: 10px;">
+              <button class="button primary" type="submit">Save Changes</button>
+              <a href="#" class="button">Cancel</a>
+            </div>
+          </form>
+        </div>
+      </div>
+
+    </div>
+    {% else %}
+    <p class="empty">No recommendations generated for this member yet. Click "Refresh Drafts" above.</p>
+    {% endfor %}
+  </div>
+</section>
+
+<style>
+.modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(2px);
+  z-index: 1000;
+  justify-content: center;
+  align-items: center;
+}
+.modal-overlay:target {
+  display: flex;
+}
+.modal-content {
+  width: 90%;
+  max-width: 500px;
+  padding: 24px;
+  border-radius: var(--radius);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+</style>
+{% endblock %}

@@ -1160,3 +1160,37 @@ pre {
 /* ─── Misc ──────────────────────────────────────────────── */
 .logout-form { margin: 0; }
 .logout-form button { width: 100%; }
+
+/* ─── Wellness Recommendations & Insights ───────────────── */
+.warn-button {
+  background: var(--brand-red);
+  color: #ffffff;
+  border-color: var(--brand-red);
+}
+.warn-button:hover {
+  background: #b91c1c;
+  color: #ffffff;
+}
+
+.recommendation-card-member {
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.recommendation-card-member:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.recommendation-card {
+  transition: border-color 0.2s;
+}
+
+.recommendation-card:hover {
+  border-color: var(--accent) !important;
+}
+
+.drawer-panel form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}

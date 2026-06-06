@@ -845,6 +845,89 @@ def init_db():
             FOREIGN KEY(requested_by) REFERENCES users(id),
             FOREIGN KEY(decided_by) REFERENCES users(id)
         );
+
+        CREATE TABLE IF NOT EXISTS content_insights (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_video_id TEXT,
+            title TEXT NOT NULL,
+            category TEXT,
+            estimated_views INTEGER DEFAULT 0,
+            reactions INTEGER DEFAULT 0,
+            raw_summary TEXT,
+            extracted_topics TEXT,
+            safety_status TEXT DEFAULT 'needs_review',
+            evidence_status TEXT DEFAULT 'unverified',
+            clinical_risk_level TEXT DEFAULT 'low',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS supplement_library (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            category TEXT,
+            evidence_grade TEXT,
+            use_cases TEXT,
+            food_first_sources TEXT,
+            typical_notes TEXT,
+            upper_limit_note TEXT,
+            contraindications TEXT,
+            medication_interactions TEXT,
+            requires_lab INTEGER DEFAULT 0,
+            clinician_review_required INTEGER DEFAULT 0,
+            source_url TEXT,
+            active INTEGER DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS member_recommendations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            member_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            recommendation_type TEXT,
+            why_appeared TEXT,
+            confidence_score TEXT,
+            first_step TEXT,
+            supplement_candidate TEXT,
+            food_first_alternative TEXT,
+            suggested_lab TEXT,
+            safety_notes TEXT,
+            recommendation_level TEXT,
+            status TEXT DEFAULT 'pending_review',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(member_id) REFERENCES members(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS recommendation_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recommendation_id INTEGER NOT NULL,
+            reviewed_by INTEGER,
+            status TEXT NOT NULL,
+            review_note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(recommendation_id) REFERENCES member_recommendations(id),
+            FOREIGN KEY(reviewed_by) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS member_health_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            member_id INTEGER UNIQUE NOT NULL,
+            sleep_quality TEXT,
+            stress_level TEXT,
+            medications TEXT,
+            allergies TEXT,
+            pregnancy_lactation_status TEXT,
+            kidney_disease INTEGER DEFAULT 0,
+            liver_disease INTEGER DEFAULT 0,
+            thyroid_condition INTEGER DEFAULT 0,
+            diabetes_prediabetes INTEGER DEFAULT 0,
+            blood_pressure TEXT,
+            vegetarian_vegan INTEGER DEFAULT 0,
+            alcohol_intake TEXT,
+            sunlight_exposure TEXT,
+            current_supplements TEXT,
+            recent_lab_values TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(member_id) REFERENCES members(id)
+        );
         """
     )
 
@@ -1063,6 +1146,50 @@ def init_db():
                 "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
                 (username, generate_password_hash(password), role),
             )
+
+    # Seed default supplements
+    supp_count = cursor.execute("SELECT COUNT(*) FROM supplement_library").fetchone()[0]
+    if supp_count == 0:
+        cursor.executemany(
+            """
+            INSERT INTO supplement_library (name, category, evidence_grade, use_cases, food_first_sources, typical_notes, upper_limit_note, contraindications, medication_interactions, requires_lab, clinician_review_required)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ('Vitamin B12', 'Vitamins', 'A', 'Vegan/vegetarian diets, energy support, nerve function', 'Fortified foods, nutritional yeast, dairy, eggs, meat', 'RDA is 2.4 mcg/day for adults. Water-soluble, high safety profile.', 'No established upper limit (UL) for B12 from food or supplements.', 'None major.', 'Metformin and proton pump inhibitors (PPIs) can decrease absorption.', 1, 0),
+                ('Vitamin D', 'Vitamins', 'A', 'Bone health, immune function, muscle function', 'Fatty fish, egg yolks, fortified foods, sunlight exposure', 'Recommended daily allowance is 600-800 IU/day.', 'Tolerable Upper Intake Level is 4,000 IU/day unless directed by doctor.', 'Hypercalcemia, severe kidney disease.', 'Thiazide diuretics (risk of hypercalcemia), weight loss drugs like Orlistat.', 1, 0),
+                ('Magnesium', 'Minerals', 'A', 'Sleep quality, muscle cramps, stress reduction, muscle function', 'Leafy greens, pumpkin seeds, almonds, black beans, dark chocolate', 'Common supplemental form is magnesium glycinate for sleep or citrate.', 'Supplemental magnesium upper limit is 350 mg/day.', 'Severe kidney disease/renal failure, heart block.', 'Can bind and reduce absorption of bisphosphonates, tetracyclines, and quinolone antibiotics.', 0, 0),
+                ('Zinc', 'Minerals', 'A', 'Immune function, protein synthesis, wound healing, recovery', 'Oysters, beef, pumpkin seeds, lentils, hemp seeds', 'RDA is 11 mg for men, 8 mg for women.', 'Tolerable Upper Intake Level is 40 mg/day.', 'None major.', 'Can reduce absorption of tetracycline and quinolone antibiotics (take 2 hours apart).', 0, 0),
+                ('Iron', 'Minerals', 'A', 'Oxygen transport, energy production, fatigue prevention', 'Red meat, poultry, spinach, lentils, fortified cereals', 'RDA is 18 mg for women, 8 mg for men.', 'Tolerable Upper Intake Level is 45 mg/day.', 'Hemochromatosis, iron overload.', 'Calcium, antacids, and thyroid medications can interact (take iron separate).', 1, 1),
+                ('Calcium', 'Minerals', 'A', 'Bone health, muscle contraction, nerve transmission', 'Dairy products, fortified plant milks, tofu, leafy greens', 'RDA is 1000-1200 mg/day.', 'Upper limit is 2000-2500 mg/day.', 'Hypercalcemia, kidney stones.', 'Can reduce absorption of thyroid hormone (levothyroxine), iron, and certain antibiotics.', 0, 0),
+                ('Iodine', 'Minerals', 'B', 'Thyroid hormone synthesis, metabolic health', 'Iodized salt, seaweed, cod, dairy, eggs', 'RDA is 150 mcg/day.', 'Upper limit is 1100 mcg/day.', 'Thyroid conditions (use with caution).', 'Anti-thyroid drugs, potassium-sparing diuretics.', 0, 1),
+                ('Omega-3', 'Fatty Acids', 'A', 'Cardiovascular health, joint recovery, cognitive health, inflammation', 'Salmon, sardines, chia seeds, walnuts, flaxseeds, algae oil', 'Focus on EPA and DHA content. Standard dose is 1000-2000 mg daily.', 'Avoid exceeding 3000 mg/day from supplements without medical supervision due to mild blood thinning.', 'Bleeding disorders (use caution).', 'Antiplatelet and anticoagulant drugs (blood thinners).', 0, 0),
+                ('Creatine monohydrate', 'Amino Acids / Sports', 'A', 'Muscular strength, high-intensity exercise performance, muscle mass', 'Beef, pork, salmon, herring (in small quantities)', 'Most studied sports supplement. Standard daily dose is 3-5 grams.', 'No formal upper limit established, but higher doses are unnecessary after loading.', 'Active kidney disease, severe liver disease.', 'Nephrotoxic drugs (drugs that can damage kidneys).', 0, 0),
+                ('Protein powder', 'Proteins', 'A', 'Muscle recovery, hypertrophy, meeting daily protein targets, convenience', 'Chicken breast, eggs, paneer, tofu, fish, beef, lentils', 'Convenient food supplement. Usually 20-30g protein per scoop.', 'No formal upper limit, but keep overall protein within 1.2-2.2 g/kg body weight.', 'Severe kidney dysfunction (consult physician).', 'None major.', 0, 0),
+                ('Electrolytes', 'Minerals', 'A', 'Hydration, athletic performance, muscle cramp prevention during heavy sweating', 'Watermelon, coconut water, bananas, salted foods', 'Contains sodium, potassium, magnesium, calcium.', 'Avoid excess sodium if hypertensive.', 'Severe renal impairment, hyperkalemia.', 'ACE inhibitors and potassium-sparing diuretics (risk of hyperkalemia).', 0, 0),
+                ('Caffeine', 'Stimulants', 'A', 'Pre-workout energy, focus, fatigue reduction', 'Coffee, green tea, black tea', 'Common dose is 100-200 mg. Avoid close to bedtime.', 'FDA recommends up to 400 mg/day max for healthy adults.', 'Severe anxiety, arrhythmias, cardiovascular issues.', 'Ephedrine, certain asthma medications, stimulants.', 0, 0),
+                ('Fiber / psyllium', 'Digestive', 'A', 'Digestive regularity, blood sugar stability, satiety', 'Oats, apples, beans, chia seeds, vegetables', 'Take with plenty of water to avoid bowel obstruction.', 'Gradually increase intake to avoid gastrointestinal discomfort.', 'Intestinal obstruction, difficulty swallowing.', 'Can reduce absorption of other medications (take 1-2 hours apart).', 0, 0)
+            ]
+        )
+
+    # Seed default content insights from PDF video analysis
+    insights_count = cursor.execute("SELECT COUNT(*) FROM content_insights").fetchone()[0]
+    if insights_count == 0:
+        cursor.executemany(
+            """
+            INSERT INTO content_insights (external_video_id, title, category, estimated_views, reactions, raw_summary, extracted_topics, safety_status, evidence_status, clinical_risk_level)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ('HW01', 'How hydration affects workout performance and fatigue', 'Health, Nutrition & Wellness', 15000000, 180000, 'Proper hydration before workouts prevents muscle fatigue, supports cardiac output, and speeds recovery. Pre-workout electrolyte balance is crucial.', 'hydration,electrolytes,recovery', 'approved_general_wellness', 'supported', 'low'),
+                ('SL02', 'Scientific routine for deep sleep and growth hormone release', 'Health, Nutrition & Wellness', 12500000, 160000, 'Sleep quality is the biggest driver of recovery. Consistent wake times, avoiding screens 60 minutes before bed, and sleeping in a cool room improve deep sleep metrics.', 'sleep,recovery', 'approved_general_wellness', 'supported', 'low'),
+                ('SN03', 'Morning sunlight for circadian rhythm and melatonin optimization', 'Health, Nutrition & Wellness', 9200000, 110000, 'Getting 10-15 minutes of direct sunlight before 9 AM resets the circadian clock, improving nighttime melatonin production and daytime energy.', 'sunlight,sleep', 'approved_general_wellness', 'supported', 'low'),
+                ('MG04', 'Why magnesium deficiency ruins sleep, stress, and testosterone', 'Health, Nutrition & Wellness', 8400000, 98000, 'High interest in magnesium. Video claims magnesium glycinate is a cure-all for stress and low testosterone. While magnesium supports sleep and muscle relaxation, claims of hormone boosting are exaggerated and kidney safety must be checked.', 'magnesium,sleep,stress', 'medical_sensitive', 'mixed', 'medium'),
+                ('PH05', 'Testosterone support: truth about ashwagandha, zinc, and vitamin D', 'Health, Nutrition & Wellness', 11200000, 135000, 'High engagement on natural testosterone boosting. Zinc and Vitamin D only support testosterone if a baseline deficiency exists. Ashwagandha has mixed evidence for cortisol control but requires cycling.', 'zinc,vitamin_d,testosterone', 'medical_sensitive', 'mixed', 'medium'),
+                ('HB06', '5 micro-habits that double daily productivity', 'Productivity & Habits', 5400000, 62000, 'Simple micro-habits like a 10-minute morning walk, setting 3 daily priorities, and drinking water immediately after waking drive high task compliance and wellness.', 'hydration,consistency', 'approved_general_wellness', 'supported', 'low'),
+                ('DB07', 'Fasting, fatty liver, and blood sugar control hacks', 'Health, Nutrition & Wellness', 7800000, 89000, 'Videos advocating intermittent fasting for reversing type 2 diabetes and fatty liver. While calorie restriction and walking after meals help insulin sensitivity, severe fasting protocols for diabetic patients require strict clinician supervision due to hypoglycemia risk.', 'diabetes,fatty_liver,blood_pressure', 'medical_sensitive', 'insufficient', 'high')
+            ]
+        )
 
     connection.commit()
     connection.close()
@@ -3043,6 +3170,8 @@ def member_detail(member_id):
         """,
         (member_id,),
     )
+    from services.clinical_recommendation_service import get_or_create_health_profile
+    health_profile = get_or_create_health_profile(db(), member_id)
     return render_template(
         "member_detail.html",
         member=member,
@@ -3065,6 +3194,7 @@ def member_detail(member_id):
         selected_medical_conditions=unpack_choices(member["medical_conditions"]),
         selected_supplements=unpack_choices(member["supplements"]),
         bmi=bmi(member["height_cm"], member["weight_kg"]),
+        health_profile=health_profile,
     )
 
 
@@ -3251,6 +3381,30 @@ def update_profile_questionnaire(member_id):
             member_id,
         ),
     )
+
+    from services.clinical_recommendation_service import update_health_profile
+    update_health_profile(
+        db(),
+        member_id,
+        {
+            'sleep_quality': request.form.get('sleep_quality', ''),
+            'stress_level': request.form.get('stress_level', ''),
+            'blood_pressure': request.form.get('blood_pressure', ''),
+            'sunlight_exposure': request.form.get('sunlight_exposure', ''),
+            'alcohol_intake': request.form.get('alcohol_intake', ''),
+            'pregnancy_lactation_status': request.form.get('pregnancy_lactation_status', ''),
+            'medications': request.form.get('medications', ''),
+            'allergies': request.form.get('allergies', ''),
+            'current_supplements': request.form.get('current_supplements', ''),
+            'recent_lab_values': request.form.get('recent_lab_values', ''),
+            'vegetarian_vegan': 1 if request.form.get('vegetarian_vegan') else 0,
+            'kidney_disease': 1 if request.form.get('kidney_disease') else 0,
+            'liver_disease': 1 if request.form.get('liver_disease') else 0,
+            'thyroid_condition': 1 if request.form.get('thyroid_condition') else 0,
+            'diabetes_prediabetes': 1 if request.form.get('diabetes_prediabetes') else 0,
+        }
+    )
+
     return redirect(url_for("member_detail", member_id=member_id))
 
 
@@ -4235,6 +4389,328 @@ def diet_pdf(member_id):
     pdf.save()
     buffer.seek(0)
     return send_file(buffer, as_attachment=True, download_name=f"{member['name'].replace(' ', '_')}_blueprint.pdf", mimetype="application/pdf")
+
+
+@app.route("/content-insights", methods=["GET", "POST"])
+@role_required("admin", "trainer")
+def content_insights():
+    from services.content_import_service import parse_and_import_insights
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "import_csv":
+            csv_data = request.form.get("csv_data", "").strip()
+            if csv_data:
+                imported, skipped = parse_and_import_insights(db(), csv_data)
+                flash(f"Successfully imported {imported} insights, skipped {skipped} invalid rows.", "good")
+            else:
+                flash("Please paste CSV data to import.", "warn")
+        elif action == "update_status":
+            insight_id = request.form.get("insight_id")
+            safety_status = request.form.get("safety_status")
+            evidence_status = request.form.get("evidence_status")
+            execute(
+                "UPDATE content_insights SET safety_status = ?, evidence_status = ? WHERE id = ?",
+                (safety_status, evidence_status, insight_id)
+            )
+            flash("Insight status updated.", "good")
+        elif action == "seed_defaults":
+            execute("DELETE FROM content_insights")
+            init_db()
+            flash("Default video insights re-seeded.", "good")
+        return redirect(url_for("content_insights"))
+
+    insights = query_all("SELECT * FROM content_insights ORDER BY estimated_views DESC, id DESC")
+    
+    total_views = sum(int(i["estimated_views"] or 0) for i in insights)
+    total_reactions = sum(int(i["reactions"] or 0) for i in insights)
+    health_count = sum(1 for i in insights if i["category"] == "Health, Nutrition & Wellness")
+    prod_count = sum(1 for i in insights if i["category"] == "Productivity & Habits")
+    
+    metrics = {
+        "total_views": f"{total_views / 1_000_000:.1f}M" if total_views >= 1_000_000 else f"{total_views:,}",
+        "total_reactions": f"{total_reactions / 1_000_000:.2f}M" if total_reactions >= 1_000_000 else f"{total_reactions:,}",
+        "health_count": health_count,
+        "prod_count": prod_count,
+        "total_count": len(insights)
+    }
+
+    return render_template("content_insights.html", insights=insights, metrics=metrics)
+
+
+@app.route("/supplements", methods=["GET", "POST"])
+@role_required("admin", "trainer")
+def supplements():
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "add":
+            execute(
+                """
+                INSERT INTO supplement_library (
+                    name, category, evidence_grade, use_cases, food_first_sources, 
+                    typical_notes, upper_limit_note, contraindications, 
+                    medication_interactions, requires_lab, clinician_review_required, active
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    request.form["name"],
+                    request.form["category"],
+                    request.form["evidence_grade"],
+                    request.form["use_cases"],
+                    request.form["food_first_sources"],
+                    request.form["typical_notes"],
+                    request.form["upper_limit_note"],
+                    request.form["contraindications"],
+                    request.form["medication_interactions"],
+                    1 if request.form.get("requires_lab") else 0,
+                    1 if request.form.get("clinician_review_required") else 0
+                )
+            )
+            flash("Supplement added to library.", "good")
+        elif action == "toggle_active":
+            supp_id = request.form.get("supp_id")
+            current = query_one("SELECT active FROM supplement_library WHERE id = ?", (supp_id,))
+            new_active = 0 if current["active"] == 1 else 1
+            execute("UPDATE supplement_library SET active = ? WHERE id = ?", (new_active, supp_id))
+            flash("Supplement status updated.", "good")
+        return redirect(url_for("supplements"))
+
+    supplements = query_all("SELECT * FROM supplement_library ORDER BY category, name")
+    return render_template("supplements.html", supplements=supplements)
+
+
+@app.route("/members/<int:member_id>/recommendations/review", methods=["GET", "POST"])
+@role_required("admin", "trainer")
+def recommendations_review(member_id):
+    from services.clinical_recommendation_service import generate_recommendation_drafts
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member or not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "generate":
+            generate_recommendation_drafts(db(), member_id)
+            flash("Fresh recommendation drafts generated successfully.", "good")
+        elif action == "approve":
+            rec_id = request.form.get("rec_id")
+            execute("UPDATE member_recommendations SET status = 'approved' WHERE id = ? AND member_id = ?", (rec_id, member_id))
+        elif action == "reject":
+            rec_id = request.form.get("rec_id")
+            execute("UPDATE member_recommendations SET status = 'rejected' WHERE id = ? AND member_id = ?", (rec_id, member_id))
+        elif action == "edit":
+            rec_id = request.form.get("rec_id")
+            execute(
+                """
+                UPDATE member_recommendations
+                SET title = ?, why_appeared = ?, confidence_score = ?, first_step = ?,
+                    supplement_candidate = ?, food_first_alternative = ?, suggested_lab = ?,
+                    safety_notes = ?, recommendation_level = ?
+                WHERE id = ? AND member_id = ?
+                """,
+                (
+                    request.form["title"],
+                    request.form["why_appeared"],
+                    request.form["confidence_score"],
+                    request.form["first_step"],
+                    request.form["supplement_candidate"],
+                    request.form["food_first_alternative"],
+                    request.form["suggested_lab"],
+                    request.form["safety_notes"],
+                    request.form["recommendation_level"],
+                    rec_id,
+                    member_id
+                )
+            )
+            flash("Recommendation updated.", "good")
+        elif action == "send_to_member":
+            execute(
+                "UPDATE member_recommendations SET status = 'sent' WHERE member_id = ? AND status = 'approved'",
+                (member_id,)
+            )
+            user = current_user()
+            execute(
+                "INSERT INTO recommendation_reviews (recommendation_id, reviewed_by, status, review_note) VALUES (?, ?, 'approved', 'Sent approved recommendations batch to member')",
+                (0, user["id"])
+            )
+            log_notification(member_id, f"Hi {member['name']}, your trainer has sent new wellness & nutrient gap recommendations to your portal.")
+            flash("Approved recommendations sent to member dashboard.", "good")
+        return redirect(url_for("recommendations_review", member_id=member_id))
+
+    recommendations = query_all("SELECT * FROM member_recommendations WHERE member_id = ? ORDER BY id DESC", (member_id,))
+    if not recommendations:
+        generate_recommendation_drafts(db(), member_id)
+        recommendations = query_all("SELECT * FROM member_recommendations WHERE member_id = ? ORDER BY id DESC", (member_id,))
+
+    sent_count = sum(1 for r in recommendations if r["status"] in ["approved", "sent"])
+    wa_msg = f"Hi {member['name']}, your personalized wellness recommendations are ready in your member portal! Focus on food-first nutrition and consult your doctor before starting any supplements."
+    whatsapp_link = wa_link(member["phone"], wa_msg)
+
+    return render_template(
+        "recommendations_review.html",
+        member=member,
+        recommendations=recommendations,
+        whatsapp_link=whatsapp_link,
+        sent_count=sent_count
+    )
+
+
+@app.route("/members/<int:member_id>/recommendations")
+@login_required
+def recommendations(member_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member or not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+
+    from services.clinical_recommendation_service import get_or_create_health_profile
+    health_profile = get_or_create_health_profile(db(), member_id)
+    recommendations = query_all("SELECT * FROM member_recommendations WHERE member_id = ? AND status = 'sent' ORDER BY id DESC", (member_id,))
+    
+    return render_template(
+        "recommendations.html",
+        member=member,
+        health_profile=health_profile,
+        recommendations=recommendations
+    )
+
+
+@app.route("/members/<int:member_id>/recommendations.pdf")
+@login_required
+def recommendations_pdf(member_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member or not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+
+    recs = query_all("SELECT * FROM member_recommendations WHERE member_id = ? AND status = 'sent' ORDER BY id DESC", (member_id,))
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    margin = 44
+    y = height - margin
+    page_width = width - margin * 2
+
+    def new_page():
+        pdf.showPage()
+        pdf.setFillColorRGB(0.05, 0.09, 0.16)
+        pdf.rect(0, height - 34, width, 34, fill=True, stroke=False)
+        pdf.setFillColorRGB(1, 1, 1)
+        pdf.setFont("Helvetica-Bold", 9)
+        pdf.drawString(margin, height - 22, "StrengthLab Wellness & Supplement Decision Support")
+        pdf.setFillColorRGB(0, 0, 0)
+        return height - margin
+
+    def ensure_space(current_y, needed=24):
+        return new_page() if current_y < margin + needed else current_y
+
+    def draw_section_header(title, current_y):
+        current_y = ensure_space(current_y, 34)
+        pdf.setFillColorRGB(0.12, 0.25, 0.69)
+        pdf.roundRect(margin, current_y - 18, width - margin * 2, 24, 5, fill=True, stroke=False)
+        pdf.setFillColorRGB(1, 1, 1)
+        pdf.setFont("Helvetica-Bold", 11)
+        pdf.drawString(margin + 10, current_y - 10, title)
+        pdf.setFillColorRGB(0, 0, 0)
+        return current_y - 34
+
+    def draw_wrapped(text, current_y, font="Helvetica", size=9.5, leading=13, width_chars=92, x=None):
+        x = x or margin
+        pdf.setFont(font, size)
+        for paragraph in (text or "").splitlines():
+            lines = textwrap.wrap(paragraph, width=width_chars) or [""]
+            for line in lines:
+                current_y = ensure_space(current_y, leading)
+                pdf.drawString(x, current_y, line)
+                current_y -= leading
+            if paragraph == "":
+                current_y -= 4
+        return current_y
+
+    def draw_recommendation_card(rec, current_y):
+        card_height = 145
+        current_y = ensure_space(current_y, card_height + 15)
+        
+        pdf.setFillColorRGB(0.98, 0.99, 1)
+        pdf.setStrokeColorRGB(0.82, 0.87, 0.94)
+        pdf.roundRect(margin, current_y - card_height, page_width, card_height, 7, fill=True, stroke=True)
+        
+        pdf.setFillColorRGB(0.06, 0.09, 0.16)
+        pdf.setFont("Helvetica-Bold", 11)
+        pdf.drawString(margin + 12, current_y - 18, rec["title"])
+        
+        lvl_label = (rec["recommendation_level"] or "").replace("_", " ").title()
+        pdf.setFillColorRGB(0.12, 0.25, 0.69)
+        pdf.setFont("Helvetica-Bold", 7.5)
+        pdf.drawString(margin + 12, current_y - 30, f"LEVEL: {lvl_label}  |  CONFIDENCE: {rec['confidence_score']}")
+        
+        pdf.setFillColorRGB(0.39, 0.45, 0.55)
+        pdf.setFont("Helvetica-Bold", 8)
+        pdf.drawString(margin + 12, current_y - 45, "WHY THIS APPEARED:")
+        pdf.setFillColorRGB(0.06, 0.09, 0.16)
+        pdf.setFont("Helvetica", 8.2)
+        pdf.drawString(margin + 12, current_y - 55, rec["why_appeared"][:95])
+        
+        pdf.setFillColorRGB(0.39, 0.45, 0.55)
+        pdf.setFont("Helvetica-Bold", 8)
+        pdf.drawString(margin + 12, current_y - 70, "FIRST STEP (FOOD / LIFESTYLE):")
+        pdf.setFillColorRGB(0.06, 0.09, 0.16)
+        pdf.setFont("Helvetica", 8.2)
+        
+        wrapped_fs = textwrap.wrap(rec["first_step"], width=92)[:2]
+        fs_y = current_y - 80
+        for line in wrapped_fs:
+            pdf.drawString(margin + 12, fs_y, line)
+            fs_y -= 10
+            
+        pdf.setFillColorRGB(0.39, 0.45, 0.55)
+        pdf.setFont("Helvetica-Bold", 8)
+        pdf.drawString(margin + 12, current_y - 105, "SUPPLEMENT CANDIDATE:")
+        pdf.setFillColorRGB(0.06, 0.09, 0.16)
+        pdf.setFont("Helvetica", 8.2)
+        pdf.drawString(margin + 12, current_y - 115, rec["supplement_candidate"][:95])
+        
+        pdf.setFillColorRGB(0.75, 0.1, 0.1)
+        pdf.setFont("Helvetica-Bold", 7.5)
+        
+        safety_text = rec["safety_notes"] or ""
+        if rec["suggested_lab"] and rec["suggested_lab"] != "Not required for general use.":
+            safety_text = f"[{rec['suggested_lab']}] " + safety_text
+            
+        pdf.drawString(margin + 12, current_y - 132, f"SAFETY: {safety_text[:100]}")
+        
+        return current_y - card_height - 10
+
+    pdf.setFillColorRGB(0.03, 0.05, 0.10)
+    pdf.rect(0, height - 92, width, 92, fill=True, stroke=False)
+    pdf.setFillColorRGB(1, 1, 1)
+    pdf.setFont("Helvetica-Bold", 18)
+    pdf.drawString(margin, height - 42, "StrengthLab Wellness Blueprint")
+    pdf.setFont("Helvetica", 9.5)
+    pdf.drawString(margin, height - 62, f"Member: {member['name']}  |  Goal: {member['primary_fitness_goal'] or member['goal'] or 'General fitness'}")
+    pdf.drawString(margin, height - 76, "Clinical Decision Support System (Trainer/Admin Reviewed)")
+    pdf.setFillColorRGB(0, 0, 0)
+    y = height - 120
+
+    y = draw_section_header("Approved Lifestyle & Nutrition Recommendations", y)
+    
+    if recs:
+        for r in recs:
+            y = draw_recommendation_card(r, y)
+    else:
+        y = draw_wrapped("No approved recommendations are active for this member yet. Once the trainer reviews and sends them, they will appear here.", y)
+        
+    y = draw_section_header("General Safety Warning", y)
+    y = draw_wrapped(
+        "CRITICAL SAFETY DISCLOSURE: These insights are derived from short-form video trend data mapped against your biometrics, and validated against standard nutritional guidelines. This is not medical advice, clinical diagnosis, or a prescription. Always seek the advice of your physician or qualified healthcare provider before initiating any supplement regimen, especially if you have chronic medical conditions (renal, hepatic, thyroid, cardiovascular) or take medications.",
+        y,
+        font="Helvetica-Bold",
+        size=7.5,
+        leading=10
+    )
+
+    pdf.save()
+    buffer.seek(0)
+    return send_file(buffer, as_attachment=True, download_name=f"{member['name'].replace(' ', '_')}_wellness_blueprint.pdf", mimetype="application/pdf")
 
 
 if __name__ == "__main__":

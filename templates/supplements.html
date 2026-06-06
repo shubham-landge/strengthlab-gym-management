@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">Admin & Trainer command center</p>
+    <h1>Supplement Library</h1>
+  </div>
+  <div class="actions">
+    <a class="button primary" href="#add-drawer">Add Supplement</a>
+  </div>
+</header>
+
+<section class="panel">
+  <div class="section-title">
+    <h2>Cataloged Supplements</h2>
+    <small>Only safe, clinically documented wellness substances are stored. hormone boosters and pre-workouts are prohibited.</small>
+  </div>
+  
+  <div class="table-wrap flat-table">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Category</th>
+          <th>Evidence Grade</th>
+          <th>Use Cases</th>
+          <th>Food-First Sources</th>
+          <th>Safety Profile / Contraindications</th>
+          <th>Flags</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for supp in supplements %}
+        <tr {% if not supp.active %}style="opacity: 0.5;"{% endif %}>
+          <td><strong>{{ supp.name }}</strong></td>
+          <td>{{ supp.category }}</td>
+          <td><span class="pill good">{{ supp.evidence_grade }}</span></td>
+          <td>{{ supp.use_cases }}</td>
+          <td>{{ supp.food_first_sources }}</td>
+          <td>
+            <div style="font-size: 0.8rem;">
+              <strong>Upper Limit:</strong> {{ supp.upper_limit_note }}<br>
+              <strong>Contraindications:</strong> <span style="color:var(--brand-red);">{{ supp.contraindications }}</span><br>
+              <strong>Meds Interaction:</strong> {{ supp.medication_interactions }}
+            </div>
+          </td>
+          <td>
+            {% if supp.requires_lab == 1 %}
+            <span class="pill warn" style="font-size:0.7rem; padding: 2px 6px;">Requires Lab</span>
+            {% endif %}
+            {% if supp.clinician_review_required == 1 %}
+            <span class="pill warn" style="font-size:0.7rem; padding: 2px 6px; background:#fee2e2; color:#b91c1c;">Clinician Review</span>
+            {% endif %}
+          </td>
+          <td>
+            <form method="post" action="{{ url_for('supplements') }}" style="display:inline;">
+              <input type="hidden" name="action" value="toggle_active">
+              <input type="hidden" name="supp_id" value="{{ supp.id }}">
+              <button class="link-button" type="submit">
+                {% if supp.active == 1 %}Deactivate{% else %}Activate{% endif %}
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="8" class="empty">No supplements registered in database library.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Add Supplement Drawer -->
+<div id="add-drawer" class="drawer-overlay">
+  <div class="drawer-panel panel">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+      <h2>Add Supplement</h2>
+      <a href="#" class="close-btn" style="font-size:1.5rem; text-decoration:none; color:var(--ink);">&times;</a>
+    </div>
+    
+    <form class="grid-form" method="post" action="{{ url_for('supplements') }}" style="display:flex; flex-direction:column; gap:12px;">
+      <input type="hidden" name="action" value="add">
+      
+      <label>Supplement Name<input name="name" required placeholder="e.g. Magnesium Glycinate"></label>
+      <label>Category
+        <select name="category">
+          <option>Vitamins</option>
+          <option>Minerals</option>
+          <option>Proteins</option>
+          <option>Amino Acids / Sports</option>
+          <option>Fatty Acids</option>
+          <option>Stimulants</option>
+          <option>Digestive</option>
+        </select>
+      </label>
+      <label>Evidence Grade
+        <select name="evidence_grade">
+          <option>A</option>
+          <option>B</option>
+          <option>C</option>
+          <option>D</option>
+        </select>
+      </label>
+      
+      <label>Use Cases<input name="use_cases" required placeholder="e.g. Muscle cramps, sleep hygiene"></label>
+      <label>Food-First Sources<input name="food_first_sources" required placeholder="e.g. Leafy greens, pumpkin seeds"></label>
+      <label>Typical Notes / Dosage<input name="typical_notes" required placeholder="e.g. 200-350 mg daily before sleep"></label>
+      <label>Upper Limit Note<input name="upper_limit_note" required placeholder="e.g. 350 mg supplemental limit"></label>
+      <label>Contraindications<input name="contraindications" required placeholder="e.g. Severe kidney disease, renal failure"></label>
+      <label>Medication Interactions<input name="medication_interactions" required placeholder="e.g. Certain antibiotics, blood pressure meds"></label>
+      
+      <div style="display:flex; gap:15px; margin: 10px 0;">
+        <label class="check"><input type="checkbox" name="requires_lab" value="1"> Requires Lab Test First</label>
+        <label class="check"><input type="checkbox" name="clinician_review_required" value="1"> Clinician Review Required</label>
+      </div>
+      
+      <button class="button primary" type="submit">Save Supplement</button>
+    </form>
+  </div>
+</div>
+
+<style>
+.drawer-overlay {
+  display: none;
+  position: fixed;
+  top: 0; right: 0; bottom: 0; left: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 1000;
+}
+.drawer-overlay:target {
+  display: block;
+}
+.drawer-panel {
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  width: 90%;
+  max-width: 480px;
+  height: 100%;
+  overflow-y: auto;
+  border-radius: 0;
+  border-left: 1px solid var(--line);
+  box-shadow: var(--shadow-md);
+  padding: 24px;
+  background: var(--panel);
+}
+</style>
+{% endblock %}
