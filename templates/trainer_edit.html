@@ -10,6 +10,11 @@
     <label>Name<input name="name" value="{{ trainer.name }}" required></label>
     <label>Specialty<input name="specialty" value="{{ trainer.specialty or '' }}"></label>
     <label>Phone<input name="phone" value="{{ trainer.phone or '' }}"></label>
+    <label>Login ID
+      <input name="login_id" value="{{ trainer_login.username if trainer_login else '' }}"
+             placeholder="{{ login_conflict.login_id ~ ' is taken - choose another' if login_conflict and not trainer_login else 'Leave blank to use the phone number' }}"
+             autocomplete="off">
+    </label>
     <label class="check field-check"><input type="checkbox" name="active" {% if trainer.active %}checked{% endif %}> Active</label>
     <label class="check field-check"><input type="checkbox" name="reset_password"> Reset password to mobile last 4 digits</label>
     <button class="button primary" type="submit">Save trainer</button>
@@ -18,10 +23,21 @@
 
 <section class="panel">
   <div class="section-title"><h2>Trainer login</h2></div>
+  {% if login_error %}
+  <p class="notice bad">{{ login_error }}</p>
+  {% endif %}
+  {% if login_conflict and not trainer_login %}
+  <p class="notice warn">
+    <strong>No login could be created.</strong>
+    The login ID <code>{{ login_conflict.login_id }}</code> from this phone number already belongs to
+    {% if login_conflict.holder_name %}{{ login_conflict.holder_name }} ({{ login_conflict.holder_role }}){% else %}another {{ login_conflict.holder_role }}{% endif %}.
+    Set a different Login ID above, or use a different phone number.
+  </p>
+  {% endif %}
   <div class="grid-form">
     <div class="readonly-field">
       <span>Login ID</span>
-      <strong>{{ trainer_login.username if trainer_login else "Will be created from phone" }}</strong>
+      <strong>{{ trainer_login.username if trainer_login else "Not created yet" }}</strong>
     </div>
     <div class="readonly-field">
       <span>Default password</span>
@@ -29,7 +45,7 @@
     </div>
     <div class="readonly-field">
       <span>Status</span>
-      <strong>{{ "Active" if not trainer_login or trainer_login.active else "Inactive" }}</strong>
+      <strong>{% if not trainer_login %}No login yet{% elif trainer_login.active %}Active{% else %}Inactive{% endif %}</strong>
     </div>
   </div>
 </section>

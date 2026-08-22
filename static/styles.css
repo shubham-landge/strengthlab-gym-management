@@ -26,6 +26,9 @@
   --warn: #b45309;
   --warn-bg: #fef3c7;
   --warn-text: #92400e;
+  --bad: #dc2626;
+  --bad-bg: #fee2e2;
+  --bad-text: #b91c1c;
   --card-text: #334155;
   --sidebar-text: #e2e8f0;
   --sidebar-muted: #94a3b8;
@@ -62,6 +65,9 @@ html[data-theme="dark"] {
   --warn: #fb923c;
   --warn-bg: rgba(251,146,60,.12);
   --warn-text: #fb923c;
+  --bad: #f87171;
+  --bad-bg: rgba(248,113,113,.12);
+  --bad-text: #f87171;
   --card-text: #cbd5e1;
   --sidebar-text: #cbd5e1;
   --sidebar-muted: #64748b;
@@ -866,6 +872,9 @@ pre {
 
 .notice.good { color: var(--good-text); background: var(--good-bg); border-color: color-mix(in srgb, var(--good) 30%, transparent); }
 .notice.warn { color: var(--warn-text); background: var(--warn-bg); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.notice.bad { color: var(--bad-text); background: var(--bad-bg); border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+.notice code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.notice strong { font-weight: 700; }
 
 /* ─── Sticky actions ────────────────────────────────────── */
 .sticky-actions {
