@@ -2,7 +2,7 @@
 {% block content %}
 <header class="page-header"><div><p class="eyebrow">Front desk</p><h1>Attendance</h1></div></header>
 <section class="panel">
-  <form class="inline-form" method="post">
+  <form class="inline-form" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <select name="member_id" required>{% for member in members %}<option value="{{ member.id }}">{{ member.name }}</option>{% endfor %}</select>
     <button class="button primary" name="action" value="in">Check in</button>
     <button class="button" name="action" value="out">Check out</button>

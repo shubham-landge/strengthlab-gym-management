@@ -2,7 +2,7 @@
 {% block content %}
 <header class="page-header"><div><p class="eyebrow">WhatsApp center</p><h1>Broadcasts and notifications</h1></div></header>
 <section class="panel">
-  <form class="grid-form compact" method="post">
+  <form class="grid-form compact" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input name="title" placeholder="Broadcast title" required>
     <input name="message" placeholder="Message to all members" required>
     <button class="button primary">Create broadcast</button>

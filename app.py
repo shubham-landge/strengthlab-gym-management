@@ -19,10 +19,42 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "gym_manager.db")
+DB_PATH = os.environ.get("GYM_DB_PATH") or os.path.join(BASE_DIR, "gym_manager.db")
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "local-gym-secret")
+
+
+def _load_secret_key():
+    """Use SECRET_KEY from the environment, else persist a generated key locally.
+
+    A stable key keeps sessions valid across restarts without shipping a
+    hardcoded secret in the repository.
+    """
+    env_key = os.environ.get("SECRET_KEY")
+    if env_key:
+        return env_key
+    key_path = os.path.join(BASE_DIR, ".secret_key")
+    try:
+        with open(key_path, "r", encoding="utf-8") as handle:
+            stored = handle.read().strip()
+        if stored:
+            return stored
+    except OSError:
+        pass
+    generated = secrets.token_urlsafe(48)
+    try:
+        with open(key_path, "w", encoding="utf-8") as handle:
+            handle.write(generated)
+        os.chmod(key_path, 0o600)
+    except OSError:
+        pass
+    return generated
+
+
+app.config["SECRET_KEY"] = _load_secret_key()
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("SESSION_COOKIE_SECURE", "").lower() in {"1", "true", "yes"}
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.2")
 DEFAULT_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 PAYMENT_REMINDER_DAYS = int(os.environ.get("PAYMENT_REMINDER_DAYS", "3"))
@@ -616,6 +648,28 @@ Safety:
 Stop or reduce intensity for sharp pain, dizziness, chest pain, severe shortness of breath, numbness, or joint pain that worsens during the set.""",
     },
 }
+
+
+def format_money(value, decimals=0):
+    """Format an amount with Indian digit grouping, e.g. 250000 -> 2,50,000."""
+    try:
+        amount = float(value or 0)
+    except (TypeError, ValueError):
+        return "0"
+    negative = amount < 0
+    amount = abs(amount)
+    whole, _, fraction = f"{amount:.{decimals}f}".partition(".")
+    if len(whole) > 3:
+        head, tail = whole[:-3], whole[-3:]
+        groups = []
+        while len(head) > 2:
+            groups.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            groups.insert(0, head)
+        whole = ",".join(groups + [tail])
+    text = f"{whole}.{fraction}" if fraction else whole
+    return f"-{text}" if negative else text
 
 
 def db():
@@ -1777,6 +1831,37 @@ def dashboard_stats():
     }
 
 
+def plan_amount(plan_name):
+    for plan in MEMBERSHIP_PLANS:
+        if plan["name"] == (plan_name or ""):
+            return plan["amount"]
+    return MEMBERSHIP_PLANS[0]["amount"]
+
+
+def outstanding_dues_total():
+    """Money actually owed to the gym.
+
+    Sums open due invoices, then adds the plan amount for every unpaid member who
+    has no due invoice raised yet. Without the second half the reports showed
+    "N unpaid members" next to "Rs 0 outstanding" whenever fees were tracked on the
+    member record but never written to the payments ledger.
+    """
+    ledger_total = query_one(
+        "SELECT COALESCE(SUM(COALESCE(net_amount, amount)), 0) AS total FROM payments WHERE status = 'Due'"
+    )["total"]
+    uninvoiced = query_all(
+        """
+        SELECT plan_name
+        FROM members
+        WHERE COALESCE(payment_status, '') NOT IN ('Paid', 'Frozen')
+          AND NOT EXISTS (
+              SELECT 1 FROM payments WHERE payments.member_id = members.id AND payments.status = 'Due'
+          )
+        """
+    )
+    return ledger_total + sum(plan_amount(row["plan_name"]) for row in uninvoiced)
+
+
 def finance_stats():
     current_month_filter = "strftime('%Y-%m', COALESCE(paid_on, due_on)) = strftime('%Y-%m', 'now')"
     collected = query_one(
@@ -1799,7 +1884,7 @@ def finance_stats():
         "monthly_revenue": query_one(
             "SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE status = 'Received' AND strftime('%Y-%m', paid_on) = strftime('%Y-%m', 'now')"
         )["total"],
-        "due_total": query_one("SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE status = 'Due'")["total"],
+        "due_total": outstanding_dues_total(),
         "cash_total": query_one(
             "SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE status = 'Received' AND payment_method = 'Cash' AND strftime('%Y-%m', paid_on) = strftime('%Y-%m', 'now')"
         )["total"],
@@ -1924,7 +2009,7 @@ def create_membership_renewal(member, form, send_whatsapp=True):
     if send_whatsapp:
         message = (
             f"Payment received. Thank you {member['name']}! Invoice {invoice_number}, "
-            f"amount Rs {net_amount}. {plan_name} membership renewed till {renewal_end}. "
+            f"amount Rs {format_money(net_amount)}. {plan_name} membership renewed till {renewal_end}. "
             "Receipt PDF is ready from StrengthLab."
         )
         log_notification(member["id"], message, f"receipt-{invoice_number}.pdf", event_key=f"renewal:{payment_id}")
@@ -2011,7 +2096,7 @@ def business_watch_data():
             """
         )["count"],
         "unpaid_members": query_one(
-            "SELECT COUNT(*) AS count FROM members WHERE COALESCE(payment_status, '') != 'Paid'"
+            "SELECT COUNT(*) AS count FROM members WHERE COALESCE(payment_status, '') NOT IN ('Paid', 'Frozen')"
         )["count"],
         "checkins_today": query_one(
             "SELECT COUNT(*) AS count FROM attendance WHERE date(check_in) = date('now')"
@@ -2289,7 +2374,7 @@ def member_dashboard_metrics(member, progress_entries, payments):
 
 
 def payment_due_message(member_name, amount, due_on, days_left):
-    amount_text = f"Rs {amount:.2f}" if amount is not None else "your gym fee"
+    amount_text = f"Rs {format_money(amount)}" if amount is not None else "your gym fee"
     if days_left is None:
         timing = "is due"
     elif days_left < 0:
@@ -2411,6 +2496,8 @@ def payment_reminder_worker():
 
 def start_payment_automation():
     global _payment_automation_started
+    if os.environ.get("DISABLE_PAYMENT_AUTOMATION", "").lower() in {"1", "true", "yes"}:
+        return
     with _payment_automation_lock:
         if _payment_automation_started:
             return
@@ -2581,6 +2668,29 @@ def enforce_password_change():
     return None
 
 
+CSRF_SESSION_KEY = "_csrf_token"
+CSRF_FIELD_NAME = "csrf_token"
+
+
+def csrf_token():
+    token = session.get(CSRF_SESSION_KEY)
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session[CSRF_SESSION_KEY] = token
+    return token
+
+
+@app.before_request
+def verify_csrf():
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return None
+    submitted = request.form.get(CSRF_FIELD_NAME) or request.headers.get("X-CSRF-Token", "")
+    expected = session.get(CSRF_SESSION_KEY, "")
+    if not expected or not secrets.compare_digest(str(submitted), str(expected)):
+        return render_template("csrf_error.html"), 400
+    return None
+
+
 @app.context_processor
 def inject_helpers():
     return {
@@ -2590,6 +2700,8 @@ def inject_helpers():
         "ai_enabled": ai_generation_enabled(),
         "ai_model_summary": ai_generation_label(),
         "openai_model": OPENAI_MODEL,
+        "csrf_token": csrf_token,
+        "money": format_money,
     }
 
 
@@ -2611,7 +2723,17 @@ def login():
                 return redirect(url_for("change_password"))
             return redirect(url_for("index"))
         error = "Invalid username or password."
-    return render_template("login.html", error=error)
+    # Only advertise the seeded demo logins that still exist, so the hint cannot
+    # point at accounts that were renamed to mobile-number logins.
+    seeded = {row["username"] for row in query_all(
+        "SELECT username FROM users WHERE username IN ('admin', 'trainer', 'member') AND active = 1"
+    )}
+    demo_logins = [
+        f"{name}/{password}"
+        for name, password in (("admin", "admin123"), ("trainer", "trainer123"), ("member", "member123"))
+        if name in seeded
+    ]
+    return render_template("login.html", error=error, demo_logins=demo_logins)
 
 
 @app.route("/change-password", methods=["GET", "POST"])
@@ -3727,9 +3849,9 @@ def payments():
                         method,
                     ),
                 )
-            message = f"Payment received. Thank you {member['name']}! Invoice {invoice_number}, amount Rs {net_amount}. Method: {method}."
+            message = f"Payment received. Thank you {member['name']}! Invoice {invoice_number}, amount Rs {format_money(net_amount)}. Method: {method}."
         else:
-            message = f"Payment reminder for {member['name']}: Rs {net_amount} due on {request.form.get('due_on')}. Invoice {invoice_number}."
+            message = f"Payment reminder for {member['name']}: Rs {format_money(net_amount)} due on {request.form.get('due_on')}. Invoice {invoice_number}."
         log_notification(member["id"], message)
         return redirect(url_for("payments"))
 
@@ -3894,9 +4016,9 @@ def payment_receipt_pdf(payment_id):
         ("Status", payment["status"]),
         ("Payment method", payment["payment_method"] or "-"),
         ("UPI transaction ID", payment["upi_transaction_id"] or "-"),
-        ("Amount", f"Rs {payment['amount'] or 0}"),
-        ("Discount", f"Rs {payment['discount_amount'] or 0}"),
-        ("Net paid/due", f"Rs {payment['net_amount'] or payment['amount'] or 0}"),
+        ("Amount", f"Rs {format_money(payment['amount'])}"),
+        ("Discount", f"Rs {format_money(payment['discount_amount'])}"),
+        ("Net paid/due", f"Rs {format_money(payment['net_amount'] or payment['amount'])}"),
         ("Paid on / Due on", payment["paid_on"] or payment["due_on"] or "-"),
         ("Notes", payment["notes"] or "-"),
     ]
@@ -4130,9 +4252,7 @@ def reports():
     monthly_revenue = query_one(
         "SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE status = 'Received' AND strftime('%Y-%m', paid_on) = strftime('%Y-%m', 'now')"
     )["total"]
-    due_total = query_one(
-        "SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE status = 'Due'"
-    )["total"]
+    due_total = outstanding_dues_total()
     active_members = query_all(
         "SELECT id, name, phone, subscription_end, payment_status FROM members ORDER BY subscription_end ASC"
     )
@@ -4362,9 +4482,9 @@ def diet_pdf(member_id):
     y = draw_section_header("Nutrition Recipe Cards", y)
     diet_text = member["diet_plan"] or ""
     diet_json = None
-    if member["diet_plan_json"]:
+    if diet_text:
         try:
-            diet_json = json.loads(member["diet_plan_json"])
+            diet_json = json.loads(diet_text)
         except (TypeError, ValueError):
             diet_json = None
     if isinstance(diet_json, dict) and diet_json.get("meals"):

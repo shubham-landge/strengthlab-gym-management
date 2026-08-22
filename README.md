@@ -18,6 +18,8 @@ Python/Flask gym management dashboard for local network deployment.
 
 ## Run Locally
 
+Windows (PowerShell):
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -25,7 +27,28 @@ pip install -r requirements.txt
 python app.py
 ```
 
+macOS / Linux:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && python app.py
+```
+
 Open `http://localhost:5000` on the host machine.
+
+> **macOS:** port `5000` is used by the AirPlay Receiver. Either turn it off in
+> *System Settings → General → AirDrop & Handoff → AirPlay Receiver*, or start the
+> app on another port with `PORT=5001 python app.py`.
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+The suite covers every page route, the PDF/Excel exports, login and role routing,
+CSRF enforcement, and the finance calculations. Tests run against a temporary
+SQLite file and never touch `gym_manager.db`.
 
 ## Demo Logins
 
@@ -34,6 +57,11 @@ Open `http://localhost:5000` on the host machine.
 - Accountant: `accountant` / `accountant123`
 - Trainer: use trainer mobile number as Login ID. Default password is the last 4 digits of the mobile number.
 - Member: use member mobile number as Login ID. Default password is the last 4 digits of the mobile number.
+
+On a freshly seeded database the sample accounts are `9999111222` / `1222` (member)
+and `9999000111` / `0111` (trainer). There is no `trainer/trainer123` or
+`member/member123` login: seeded trainer and member accounts are converted to
+mobile-number login IDs on first run.
 
 Admins can manage the full system. Trainers can view their assigned members and attendance. Members are redirected to their own dashboard.
 
@@ -57,6 +85,27 @@ http://<your-computer-ip>:5000
 ```
 
 The app binds to `0.0.0.0` so LAN devices can access it if Windows Firewall allows Python on port `5000`.
+
+## Security and Configuration
+
+- **Session secret.** Set `SECRET_KEY` in the environment for any shared deployment.
+  If it is not set, the app generates a random key on first run and stores it in
+  `.secret_key` (gitignored) so sessions survive restarts.
+- **CSRF.** Every form posts a per-session token; unverified posts are rejected with
+  HTTP 400. Templates emit the token via `{{ csrf_token() }}`.
+- **Cookies.** Session cookies are `HttpOnly` and `SameSite=Lax`. When serving over
+  HTTPS, also set `SESSION_COOKIE_SECURE=1`.
+- **Passwords.** Trainer/member default passwords are the last 4 digits of the mobile
+  number and must be changed at first login.
+- **Production.** `python app.py` runs Flask's development server. Serve with
+  gunicorn instead: `gunicorn --bind=0.0.0.0:5000 app:app`.
+
+Other environment settings:
+
+```bash
+GYM_DB_PATH=/path/to/gym_manager.db   # override the SQLite location
+DISABLE_PAYMENT_AUTOMATION=1          # skip the hourly reminder worker
+```
 
 ## WhatsApp Notes
 

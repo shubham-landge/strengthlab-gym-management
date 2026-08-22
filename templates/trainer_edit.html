@@ -6,7 +6,7 @@
 </header>
 
 <section class="panel">
-  <form class="grid-form compact" method="post">
+  <form class="grid-form compact" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Name<input name="name" value="{{ trainer.name }}" required></label>
     <label>Specialty<input name="specialty" value="{{ trainer.specialty or '' }}"></label>
     <label>Phone<input name="phone" value="{{ trainer.phone or '' }}"></label>

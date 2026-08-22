@@ -4,7 +4,7 @@
   <div><p class="eyebrow">Inventory</p><h1>Equipment</h1></div>
   <div class="actions">
     <a class="button" href="{{ url_for('equipment_guide') }}">Beginner guide</a>
-    <form method="post" action="{{ url_for('seed_equipment_route') }}">
+    <form method="post" action="{{ url_for('seed_equipment_route') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="button primary" type="submit">Add prebuilt equipment</button>
     </form>
   </div>
@@ -15,7 +15,7 @@
 {% endif %}
 
 <section class="panel">
-  <form class="grid-form compact" method="post">
+  <form class="grid-form compact" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input name="name" placeholder="Equipment name" required>
     <input name="category" placeholder="Category">
     <input name="quantity" type="number" placeholder="Qty" value="1">
@@ -35,7 +35,7 @@
     <td>{{ item.maintenance_due }}</td>
     <td class="actions-cell">
       <a href="{{ url_for('edit_equipment', equipment_id=item.id) }}">Edit</a>
-      <form method="post" action="{{ url_for('delete_equipment', equipment_id=item.id) }}">
+      <form method="post" action="{{ url_for('delete_equipment', equipment_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button class="link-button" type="submit">Delete</button>
       </form>
     </td>

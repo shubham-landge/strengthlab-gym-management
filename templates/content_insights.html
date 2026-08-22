@@ -7,7 +7,7 @@
   </div>
   <div class="actions">
     <a class="button" href="#import-drawer">Import CSV rows</a>
-    <form method="post" action="{{ url_for('content_insights') }}" style="display:inline;">
+    <form method="post" action="{{ url_for('content_insights') }}" style="display:inline;"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="action" value="seed_defaults">
       <button class="button warn-button" type="submit" onclick="return confirm('Are you sure you want to clear and re-seed defaults?');">Reset default insights</button>
     </form>
@@ -92,7 +92,7 @@
               <div class="modal-content panel">
                 <h3>Update Safety Classification</h3>
                 <p><strong>{{ insight.title }}</strong></p>
-                <form method="post" action="{{ url_for('content_insights') }}">
+                <form method="post" action="{{ url_for('content_insights') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="action" value="update_status">
                   <input type="hidden" name="insight_id" value="{{ insight.id }}">
                   
@@ -141,7 +141,7 @@
       <h2>Import Video Insights</h2>
       <a href="#" class="close-btn" style="font-size:1.5rem; text-decoration:none; color:var(--ink);">&times;</a>
     </div>
-    <form method="post" action="{{ url_for('content_insights') }}">
+    <form method="post" action="{{ url_for('content_insights') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="action" value="import_csv">
       
       <p style="font-size:0.8rem; color:var(--muted); margin-bottom:10px;">

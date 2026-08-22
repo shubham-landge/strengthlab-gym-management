@@ -40,7 +40,7 @@
         <small>{{ member.phone }} · {{ member.plan_name or "Plan not set" }}</small>
         <span>{{ member.primary_fitness_goal or member.goal or "General fitness" }}</span>
       </div>
-      <form method="post" action="{{ url_for('request_trainer_assignment') }}">
+      <form method="post" action="{{ url_for('request_trainer_assignment') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="member_id" value="{{ member.id }}">
         <input name="request_note" placeholder="Why this member fits your coaching">
         <button class="button primary" type="submit">Request assignment</button>
@@ -81,7 +81,7 @@
 {% if current_user.role in ["admin", "owner"] %}
 <section class="panel">
   <div class="section-title"><h2>Direct assign unassigned member</h2><small>Use when no approval delay is needed.</small></div>
-  <form class="grid-form compact" method="post" action="{{ url_for('direct_trainer_assignment') }}">
+  <form class="grid-form compact" method="post" action="{{ url_for('direct_trainer_assignment') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <select name="member_id" required>
       <option value="">Choose member</option>
       {% for member in unassigned_members %}
@@ -113,11 +113,11 @@
         <td>{{ request_row.created_at }}</td>
         <td>
           <div class="decision-actions">
-            <form method="post" action="{{ url_for('approve_trainer_assignment', request_id=request_row.id) }}">
+            <form method="post" action="{{ url_for('approve_trainer_assignment', request_id=request_row.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <input name="decision_note" placeholder="Approval note">
               <button class="button primary" type="submit">Approve</button>
             </form>
-            <form method="post" action="{{ url_for('reject_trainer_assignment', request_id=request_row.id) }}">
+            <form method="post" action="{{ url_for('reject_trainer_assignment', request_id=request_row.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <input name="decision_note" placeholder="Reason">
               <button class="button" type="submit">Reject</button>
             </form>

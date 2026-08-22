@@ -11,7 +11,7 @@
   </div>
 </header>
 
-<form method="post" class="edit-layout">
+<form method="post" class="edit-layout"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <section class="panel">
     <div class="section-title"><h2>Personal details</h2></div>
     <div class="grid-form">
