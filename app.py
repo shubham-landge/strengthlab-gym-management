@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from functools import wraps
 from io import BytesIO
@@ -11,7 +12,7 @@ import time
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from flask import Flask, g, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, g, redirect, render_template, request, send_file, session, url_for
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from openpyxl import Workbook
@@ -59,6 +60,9 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.2")
 DEFAULT_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 PAYMENT_REMINDER_DAYS = int(os.environ.get("PAYMENT_REMINDER_DAYS", "3"))
 PAYMENT_REMINDER_INTERVAL_SECONDS = int(os.environ.get("PAYMENT_REMINDER_INTERVAL_SECONDS", "3600"))
+# Stop chasing a lapsed membership after this many days, so long-gone members do
+# not receive a WhatsApp reminder every single day forever.
+OVERDUE_REMINDER_WINDOW_DAYS = int(os.environ.get("OVERDUE_REMINDER_WINDOW_DAYS", "30"))
 _payment_automation_started = False
 _payment_automation_lock = threading.Lock()
 _startup_ready = False
@@ -691,6 +695,27 @@ def execute(query, params=()):
     db().commit()
 
 
+@contextmanager
+def transaction():
+    """Run several statements as one unit so a partial failure rolls back.
+
+    The plain execute() helper commits per statement, which is fine for single
+    writes but leaves money operations half-applied if a later step fails.
+    """
+    connection = db()
+    try:
+        yield connection
+    except Exception:
+        connection.rollback()
+        raise
+    else:
+        connection.commit()
+
+
+def row_or_none(table, row_id):
+    return query_one(f"SELECT * FROM {table} WHERE id = ?", (row_id,))
+
+
 def query_all(query, params=()):
     return db().execute(query, params).fetchall()
 
@@ -1057,6 +1082,45 @@ def init_db():
     for column, column_type in payment_extra_columns.items():
         if column not in payment_columns:
             cursor.execute(f"ALTER TABLE payments ADD COLUMN {column} {column_type}")
+
+    # Uniqueness the schema could not declare via ALTER TABLE. Existing duplicates are
+    # repaired first, otherwise the index creation fails and the migration is stuck.
+    duplicate_invoices = cursor.execute(
+        """
+        SELECT invoice_number FROM payments
+        WHERE invoice_number IS NOT NULL AND invoice_number != ''
+        GROUP BY invoice_number HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    for (invoice_number,) in duplicate_invoices:
+        stale = cursor.execute(
+            "SELECT id FROM payments WHERE invoice_number = ? ORDER BY id",
+            (invoice_number,),
+        ).fetchall()[1:]
+        for (payment_id,) in stale:
+            cursor.execute(
+                "UPDATE payments SET invoice_number = ? WHERE id = ?",
+                (f"{invoice_number}-D{payment_id}", payment_id),
+            )
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_invoice_number
+        ON payments (invoice_number) WHERE invoice_number IS NOT NULL AND invoice_number != ''
+        """
+    )
+    cursor.execute(
+        """
+        DELETE FROM notifications WHERE event_key IS NOT NULL AND id NOT IN (
+            SELECT MIN(id) FROM notifications WHERE event_key IS NOT NULL GROUP BY event_key
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_event_key
+        ON notifications (event_key) WHERE event_key IS NOT NULL
+        """
+    )
 
     user_columns = {row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()}
     if "must_change_password" not in user_columns:
@@ -1838,6 +1902,23 @@ def plan_amount(plan_name):
     return MEMBERSHIP_PLANS[0]["amount"]
 
 
+def sync_member_payment_status(member_id):
+    """Mark a member paid only once nothing is still outstanding.
+
+    Settling one invoice used to flip the member to 'Paid' outright, hiding any
+    other invoice still sitting in 'Due'. Frozen memberships keep their status.
+    """
+    member = query_one("SELECT payment_status, subscription_end FROM members WHERE id = ?", (member_id,))
+    if not member or member["payment_status"] == "Frozen":
+        return
+    still_due = query_one(
+        "SELECT COUNT(*) AS count FROM payments WHERE member_id = ? AND status = 'Due'",
+        (member_id,),
+    )["count"]
+    status = "Due" if still_due else "Paid"
+    execute("UPDATE members SET payment_status = ? WHERE id = ?", (status, member_id))
+
+
 def outstanding_dues_total():
     """Money actually owed to the gym.
 
@@ -1905,12 +1986,23 @@ def finance_stats():
 
 
 def next_invoice_number():
+    """Next unused invoice number for this year.
+
+    Derived from the highest number already issued rather than a row count, so
+    deleting a payment cannot make the sequence hand out a number twice. A unique
+    index on payments.invoice_number is the final guard against concurrent writers.
+    """
     year = date.today().year
-    count = query_one(
-        "SELECT COUNT(*) AS count FROM payments WHERE invoice_number LIKE ?",
-        (f"SL-{year}-%",),
-    )["count"]
-    return f"SL-{year}-{count + 1:05d}"
+    prefix = f"SL-{year}-"
+    highest = query_one(
+        """
+        SELECT MAX(CAST(substr(invoice_number, ?) AS INTEGER)) AS highest
+        FROM payments
+        WHERE invoice_number LIKE ?
+        """,
+        (len(prefix) + 1, f"{prefix}%"),
+    )["highest"]
+    return f"{prefix}{(highest or 0) + 1:05d}"
 
 
 def plan_settings(plan_name):
@@ -1958,54 +2050,63 @@ def create_membership_renewal(member, form, send_whatsapp=True):
             datetime.strptime(renewal_start, "%Y-%m-%d").date()
             + timedelta(days=plan_settings(plan_name)["days"] - 1)
         ).isoformat()
-    invoice_number = next_invoice_number()
-    cursor = db().execute(
-        """
-        INSERT INTO payments
-        (member_id, invoice_number, amount, discount_amount, net_amount, status, payment_method,
-         upi_transaction_id, paid_on, due_on, notes)
-        VALUES (?, ?, ?, ?, ?, 'Received', ?, ?, ?, ?, ?)
-        """,
-        (
-            member["id"],
-            invoice_number,
-            amount,
-            discount_amount,
-            net_amount,
-            payment_method,
-            form.get("upi_transaction_id"),
-            date.today().isoformat(),
-            renewal_end,
-            form.get("notes") or f"{plan_name} membership renewal",
-        ),
-    )
-    db().commit()
-    payment_id = cursor.lastrowid
-    execute(
-        """
-        UPDATE members
-        SET subscription_start = ?, subscription_end = ?, plan_name = ?, payment_status = 'Paid'
-        WHERE id = ?
-        """,
-        (renewal_start, renewal_end, plan_name, member["id"]),
-    )
-    execute(
-        """
-        INSERT INTO renewal_history
-        (member_id, payment_id, plan_name, renewal_start, renewal_end, amount, discount_amount, payment_method)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            member["id"],
-            payment_id,
-            plan_name,
-            renewal_start,
-            renewal_end,
-            net_amount,
-            discount_amount,
-            payment_method,
-        ),
-    )
+    # The payment, the membership dates and the history row must land together:
+    # committing them separately can leave a member charged but not renewed.
+    for attempt in range(5):
+        invoice_number = next_invoice_number()
+        try:
+            with transaction() as connection:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO payments
+                    (member_id, invoice_number, amount, discount_amount, net_amount, status, payment_method,
+                     upi_transaction_id, paid_on, due_on, notes)
+                    VALUES (?, ?, ?, ?, ?, 'Received', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        member["id"],
+                        invoice_number,
+                        amount,
+                        discount_amount,
+                        net_amount,
+                        payment_method,
+                        form.get("upi_transaction_id"),
+                        date.today().isoformat(),
+                        renewal_end,
+                        form.get("notes") or f"{plan_name} membership renewal",
+                    ),
+                )
+                payment_id = cursor.lastrowid
+                connection.execute(
+                    """
+                    UPDATE members
+                    SET subscription_start = ?, subscription_end = ?, plan_name = ?, payment_status = 'Paid'
+                    WHERE id = ?
+                    """,
+                    (renewal_start, renewal_end, plan_name, member["id"]),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO renewal_history
+                    (member_id, payment_id, plan_name, renewal_start, renewal_end, amount, discount_amount, payment_method)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        member["id"],
+                        payment_id,
+                        plan_name,
+                        renewal_start,
+                        renewal_end,
+                        net_amount,
+                        discount_amount,
+                        payment_method,
+                    ),
+                )
+            break
+        except sqlite3.IntegrityError:
+            # Another writer claimed this invoice number; recompute and retry.
+            if attempt == 4:
+                raise
     if send_whatsapp:
         message = (
             f"Payment received. Thank you {member['name']}! Invoice {invoice_number}, "
@@ -2142,13 +2243,18 @@ def wa_link(phone, message):
 
 
 def log_notification(member_id, message, attachment=None, event_key=None):
+    """Queue a notification, at most once per event_key.
+
+    The unique index on notifications.event_key does the deduplicating, so two
+    concurrent reminder scans cannot both pass a check and queue the same message.
+    """
     if event_key:
-        existing = query_one(
-            "SELECT id FROM notifications WHERE event_key = ? LIMIT 1",
-            (event_key,),
+        cursor = db().execute(
+            "INSERT OR IGNORE INTO notifications (member_id, message, attachment, event_key) VALUES (?, ?, ?, ?)",
+            (member_id, message, attachment, event_key),
         )
-        if existing:
-            return False
+        db().commit()
+        return cursor.rowcount > 0
     execute(
         "INSERT INTO notifications (member_id, message, attachment, event_key) VALUES (?, ?, ?, ?)",
         (member_id, message, attachment, event_key),
@@ -2431,11 +2537,15 @@ def queue_payment_due_reminders(days_ahead=PAYMENT_REMINDER_DAYS):
           AND (
             date(subscription_end) = date('now')
             OR date(subscription_end) = date('now', '+7 day')
-            OR (payment_status = 'Due' AND date(subscription_end) <= date('now', ?))
+            OR (
+              payment_status = 'Due'
+              AND date(subscription_end) <= date('now', ?)
+              AND date(subscription_end) >= date('now', ?)
+            )
           )
         ORDER BY subscription_end ASC
         """,
-        (f"+{days_ahead} day",),
+        (f"+{days_ahead} day", f"-{OVERDUE_REMINDER_WINDOW_DAYS} day"),
     )
     for member in expiring_members:
         scanned += 1
@@ -2592,16 +2702,38 @@ def default_mobile_password(phone):
     return username[-4:] if len(username) >= 4 else "1234"
 
 
+def login_belongs_to_someone_else(user_row, role, member_id, trainer_id):
+    """True when this username is already a live login for a different person."""
+    if user_row["role"] not in {"member", "trainer"}:
+        return True  # never repurpose a staff account
+    if role == "member":
+        owner_id = user_row["member_id"]
+        if not owner_id or owner_id == member_id:
+            return False
+        return query_one("SELECT id FROM members WHERE id = ?", (owner_id,)) is not None
+    if role == "trainer":
+        owner_id = user_row["trainer_id"]
+        if not owner_id or owner_id == trainer_id:
+            return False
+        return query_one("SELECT id FROM trainers WHERE id = ?", (owner_id,)) is not None
+    return False
+
+
 def create_or_update_mobile_user(role, phone, member_id=None, trainer_id=None, reset_password=False):
     username = mobile_login_id(phone)
     if not username:
         return None
     password = default_mobile_password(phone)
-    username_owner = query_one("SELECT id FROM users WHERE username = ?", (username,))
+    username_owner = query_one("SELECT * FROM users WHERE username = ?", (username,))
     existing = query_one(
         "SELECT id FROM users WHERE role = ? AND (member_id = ? OR trainer_id = ?)",
         (role, member_id, trainer_id),
     )
+    if username_owner and login_belongs_to_someone_else(username_owner, role, member_id, trainer_id):
+        # Two people share this mobile number. Repurposing the login would hand
+        # this account to the newcomer and lock the original person out, so leave
+        # the existing login alone and create none for this record.
+        return None
     if username_owner:
         execute(
             "UPDATE users SET role = ?, member_id = ?, trainer_id = ?, active = 1 WHERE id = ?",
@@ -2994,8 +3126,18 @@ def members():
 @app.route("/members/add", methods=["POST"])
 @role_required("admin")
 def add_member():
+    plan_name = request.form.get("plan_name", "Monthly")
     subscription_start = request.form.get("subscription_start") or str(date.today())
-    subscription_end = request.form.get("subscription_end") or str(date.today() + timedelta(days=30))
+    subscription_end = request.form.get("subscription_end")
+    if not subscription_end:
+        # Length comes from the chosen plan; a flat 30 days silently downgraded
+        # Quarterly and Annual memberships to one month.
+        try:
+            start_date = datetime.strptime(subscription_start, "%Y-%m-%d").date()
+        except ValueError:
+            start_date = date.today()
+            subscription_start = str(start_date)
+        subscription_end = str(start_date + timedelta(days=plan_settings(plan_name)["days"] - 1))
     workout_subscription = request.form.get("workout_subscription", "Regular")
     diet_subscription = request.form.get("diet_subscription", "None")
     premium = 1 if workout_subscription == "Premium" or diet_subscription == "Premium" else 0
@@ -3022,7 +3164,7 @@ def add_member():
             request.form.get("food_preference"),
             request.form.get("medical_notes"),
             request.form.get("injury_notes"),
-            request.form.get("plan_name", "Monthly"),
+            plan_name,
             premium,
             workout_subscription,
             diet_subscription,
@@ -3341,10 +3483,11 @@ def renew_member(member_id):
     )
 
 
-def restored_payment_status(member):
-    if member["subscription_end"]:
+def restored_payment_status(subscription_end):
+    """Status a membership returns to, based on the expiry it will actually have."""
+    if subscription_end:
         try:
-            expiry = datetime.strptime(member["subscription_end"], "%Y-%m-%d").date()
+            expiry = datetime.strptime(subscription_end, "%Y-%m-%d").date()
             return "Paid" if expiry >= date.today() else "Due"
         except ValueError:
             pass
@@ -3390,7 +3533,6 @@ def unfreeze_member(member_id):
     member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
     if not can_view_member(current_user(), member):
         return redirect(url_for("index"))
-    status = restored_payment_status(member)
     active_freeze = query_one(
         "SELECT * FROM membership_freezes WHERE member_id = ? AND unfrozen_on IS NULL ORDER BY id DESC LIMIT 1",
         (member_id,),
@@ -3406,6 +3548,9 @@ def unfreeze_member(member_id):
             ).isoformat()
         except ValueError:
             expiry_after = member["subscription_end"]
+    # Derive the status from the expiry actually being saved, so a membership
+    # extended back into the future is not left marked as unpaid.
+    status = restored_payment_status(expiry_after)
     execute("UPDATE members SET payment_status = ?, subscription_end = ? WHERE id = ?", (status, expiry_after, member_id))
     if active_freeze:
         execute(
@@ -3645,7 +3790,9 @@ def delete_progress(member_id, progress_id):
 @app.route("/members/<int:member_id>/edit", methods=["GET", "POST"])
 @role_required("admin")
 def edit_member(member_id):
-    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    member = row_or_none("members", member_id)
+    if not member:
+        abort(404)
     trainers = query_all("SELECT * FROM trainers WHERE active = 1 ORDER BY name")
     member_login = get_member_login(member_id)
     if request.method == "POST":
@@ -3821,7 +3968,7 @@ def payments():
         )
         db().commit()
         payment_id = cursor.lastrowid
-        execute("UPDATE members SET payment_status = ? WHERE id = ?", ("Paid" if status == "Received" else "Due", request.form["member_id"]))
+        sync_member_payment_status(request.form["member_id"])
         member = query_one("SELECT * FROM members WHERE id = ?", (request.form["member_id"],))
         if status == "Received":
             method = request.form.get("payment_method") or "Not specified"
@@ -3983,7 +4130,7 @@ def payment_batch_action():
                     "UPDATE payments SET status = 'Received', paid_on = COALESCE(paid_on, ?), payment_method = COALESCE(payment_method, 'Cash') WHERE id = ?",
                     (date.today().isoformat(), payment_id),
                 )
-                execute("UPDATE members SET payment_status = 'Paid' WHERE id = ?", (payment["member_id"],))
+                sync_member_payment_status(payment["member_id"])
                 changed += 1
 
     return redirect(url_for("payments", batch=changed, action=action or "none"))
@@ -4000,6 +4147,8 @@ def payment_receipt_pdf(payment_id):
         """,
         (payment_id,),
     )
+    if not payment:
+        abort(404)
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
@@ -4116,7 +4265,9 @@ def trainers():
 @app.route("/trainers/<int:trainer_id>/edit", methods=["GET", "POST"])
 @role_required("admin", "owner")
 def edit_trainer(trainer_id):
-    trainer = query_one("SELECT * FROM trainers WHERE id = ?", (trainer_id,))
+    trainer = row_or_none("trainers", trainer_id)
+    if not trainer:
+        abort(404)
     if request.method == "POST":
         execute(
             "UPDATE trainers SET name = ?, specialty = ?, phone = ?, active = ? WHERE id = ?",
@@ -4196,7 +4347,9 @@ def seed_equipment_route():
 @app.route("/equipment/<int:equipment_id>/edit", methods=["GET", "POST"])
 @role_required("admin", "owner")
 def edit_equipment(equipment_id):
-    item = query_one("SELECT * FROM equipment WHERE id = ?", (equipment_id,))
+    item = row_or_none("equipment", equipment_id)
+    if not item:
+        abort(404)
     if request.method == "POST":
         execute(
             """
