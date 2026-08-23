@@ -12,7 +12,7 @@ import time
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from flask import Flask, abort, g, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, g, has_request_context, redirect, render_template, request, send_file, session, url_for
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from openpyxl import Workbook
@@ -2700,11 +2700,51 @@ def mobile_login_id(phone):
     return username or None
 
 
-def default_mobile_password(phone):
-    username = mobile_login_id(phone)
-    if not username:
-        return None
-    return username[-4:] if len(username) >= 4 else "1234"
+# Excludes characters that are easily misread when a password is read aloud
+# or copied off a screen: 0/O, 1/l/I.
+TEMP_PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+
+
+def generate_temp_password(length=10):
+    """A single-use password for a new or reset account.
+
+    Replaces the old scheme of "last 4 digits of the mobile number", which was a
+    10,000-guess space keyed to a login ID that is itself the phone number.
+    """
+    return "".join(secrets.choice(TEMP_PASSWORD_ALPHABET) for _ in range(length))
+
+
+def remember_issued_credential(username, password, person=None):
+    """Stash a freshly issued password to show staff exactly once.
+
+    Only the hash is ever stored in the database; this lives in the signed session
+    and is cleared as soon as it has been displayed.
+    """
+    if not username or not password:
+        return
+    if not has_request_context():
+        # Seeding at startup: there is no staff member on screen to show this to.
+        return
+    issued = session.get("issued_credentials", [])
+    issued.append({"username": username, "password": password, "person": person})
+    session["issued_credentials"] = issued[-5:]
+
+
+def take_issued_credentials():
+    if not has_request_context():
+        return []
+    return session.pop("issued_credentials", [])
+
+
+def reset_user_password(user_id, username=None):
+    """Issue a fresh single-use password and force a change at next sign-in."""
+    password = generate_temp_password()
+    execute(
+        "UPDATE users SET password_hash = ?, must_change_password = 1, reset_token = NULL, reset_token_created_at = NULL WHERE id = ?",
+        (generate_password_hash(password), user_id),
+    )
+    remember_issued_credential(username, password)
+    return password
 
 
 def login_belongs_to_someone_else(user_row, role, member_id, trainer_id):
@@ -2772,7 +2812,7 @@ def set_manual_login_id(role, login_id, phone, member_id=None, trainer_id=None):
             (login_id, existing["id"]),
         )
         return login_id, None
-    password = default_mobile_password(phone) or login_id[-4:]
+    password = generate_temp_password()
     execute(
         """
         INSERT INTO users (username, password_hash, role, member_id, trainer_id, must_change_password, username_locked)
@@ -2780,6 +2820,7 @@ def set_manual_login_id(role, login_id, phone, member_id=None, trainer_id=None):
         """,
         (login_id, generate_password_hash(password), role, member_id, trainer_id),
     )
+    remember_issued_credential(login_id, password)
     return login_id, None
 
 
@@ -2787,7 +2828,6 @@ def create_or_update_mobile_user(role, phone, member_id=None, trainer_id=None, r
     username = mobile_login_id(phone)
     if not username:
         return None
-    password = default_mobile_password(phone)
     username_owner = query_one("SELECT * FROM users WHERE username = ?", (username,))
     existing = query_one(
         "SELECT id, username, username_locked FROM users WHERE role = ? AND (member_id = ? OR trainer_id = ?)",
@@ -2796,10 +2836,7 @@ def create_or_update_mobile_user(role, phone, member_id=None, trainer_id=None, r
     if existing and existing["username_locked"] and existing["username"] != username:
         # Staff assigned this login ID by hand; leave it alone.
         if reset_password:
-            execute(
-                "UPDATE users SET password_hash = ?, must_change_password = 1, reset_token = NULL, reset_token_created_at = NULL WHERE id = ?",
-                (generate_password_hash(password or existing["username"][-4:]), existing["id"]),
-            )
+            reset_user_password(existing["id"], existing["username"])
         return existing["username"]
     if username_owner and login_belongs_to_someone_else(username_owner, role, member_id, trainer_id):
         # Two people share this mobile number. Repurposing the login would hand
@@ -2814,10 +2851,7 @@ def create_or_update_mobile_user(role, phone, member_id=None, trainer_id=None, r
         if existing and existing["id"] != username_owner["id"]:
             execute("DELETE FROM users WHERE id = ?", (existing["id"],))
         if reset_password:
-            execute(
-                "UPDATE users SET password_hash = ?, must_change_password = 1, reset_token = NULL, reset_token_created_at = NULL WHERE id = ?",
-                (generate_password_hash(password), username_owner["id"]),
-            )
+            reset_user_password(username_owner["id"], username)
         return username
 
     if existing:
@@ -2826,16 +2860,15 @@ def create_or_update_mobile_user(role, phone, member_id=None, trainer_id=None, r
             (username, member_id, trainer_id, existing["id"]),
         )
         if reset_password:
-            execute(
-                "UPDATE users SET password_hash = ?, must_change_password = 1, reset_token = NULL, reset_token_created_at = NULL WHERE id = ?",
-                (generate_password_hash(password), existing["id"]),
-            )
+            reset_user_password(existing["id"], username)
         return username
 
+    password = generate_temp_password()
     execute(
         "INSERT INTO users (username, password_hash, role, member_id, trainer_id, must_change_password) VALUES (?, ?, ?, ?, ?, 1)",
         (username, generate_password_hash(password), role, member_id, trainer_id),
     )
+    remember_issued_credential(username, password)
     return username
 
 
@@ -2906,6 +2939,7 @@ def inject_helpers():
         "openai_model": OPENAI_MODEL,
         "csrf_token": csrf_token,
         "money": format_money,
+        "issued_credentials": take_issued_credentials,
     }
 
 
@@ -3850,7 +3884,6 @@ def generate_member_plan_draft(member_id):
         member=preview_member,
         trainers=query_all("SELECT * FROM trainers WHERE active = 1 ORDER BY name"),
         member_login=get_member_login(member_id),
-        default_password=default_mobile_password(preview_member["phone"]),
         draft_workout_plan=draft if plan_type == "workout" else None,
         draft_diet_plan=draft if plan_type == "diet" else None,
         selected_customizations=customizations,
@@ -3939,7 +3972,6 @@ def edit_member(member_id):
                 member=member,
                 trainers=trainers,
                 member_login=get_member_login(member_id),
-                default_password=default_mobile_password(member["phone"]),
                 login_conflict=login_conflict("member", member["phone"], member_id=member_id),
                 login_error=login_error,
             )
@@ -3961,7 +3993,6 @@ def edit_member(member_id):
         member=member,
         trainers=trainers,
         member_login=member_login,
-        default_password=default_mobile_password(member["phone"]),
         login_conflict=login_conflict("member", member["phone"], member_id=member_id),
     )
 
@@ -4404,7 +4435,6 @@ def edit_trainer(trainer_id):
         trainer=trainer,
         trainer_login=trainer_login,
         assigned_members=assigned_members,
-        default_password=default_mobile_password(trainer["phone"]),
         login_conflict=login_conflict("trainer", trainer["phone"], trainer_id=trainer_id),
         login_error=login_error,
     )

@@ -47,21 +47,26 @@ python -m pytest
 ```
 
 The suite covers every page route, the PDF/Excel exports, login and role routing,
-CSRF enforcement, and the finance calculations. Tests run against a temporary
-SQLite file and never touch `gym_manager.db`.
+CSRF enforcement, password issuing, and the finance calculations. Tests run against
+a temporary SQLite file and never touch `gym_manager.db`.
+
+GitHub Actions runs the same suite on Python 3.11 and 3.12 for every push and pull
+request, plus a check that the app boots and serves a page.
 
 ## Demo Logins
 
 - Admin: `admin` / `admin123`
 - Owner: `owner` / `owner123`
 - Accountant: `accountant` / `accountant123`
-- Trainer: use trainer mobile number as Login ID. Default password is the last 4 digits of the mobile number.
-- Member: use member mobile number as Login ID. Default password is the last 4 digits of the mobile number.
+- Trainer and member: the mobile number is the Login ID. The password is a random
+  one-time password shown on screen when the login is created, and it must be
+  changed at first sign-in. Only the hash is stored, so it cannot be shown again —
+  note it down, or use **Reset password** to issue a new one.
+- Staff can assign a different Login ID (member or trainer edit screen) when two
+  people share a mobile number.
 
-On a freshly seeded database the sample accounts are `9999111222` / `1222` (member)
-and `9999000111` / `0111` (trainer). There is no `trainer/trainer123` or
-`member/member123` login: seeded trainer and member accounts are converted to
-mobile-number login IDs on first run.
+There is no `trainer/trainer123` or `member/member123` login: seeded trainer and
+member accounts are converted to mobile-number login IDs on first run.
 
 Admins can manage the full system. Trainers can view their assigned members and attendance. Members are redirected to their own dashboard.
 
@@ -95,10 +100,19 @@ The app binds to `0.0.0.0` so LAN devices can access it if Windows Firewall allo
   HTTP 400. Templates emit the token via `{{ csrf_token() }}`.
 - **Cookies.** Session cookies are `HttpOnly` and `SameSite=Lax`. When serving over
   HTTPS, also set `SESSION_COOKIE_SECURE=1`.
-- **Passwords.** Trainer/member default passwords are the last 4 digits of the mobile
-  number and must be changed at first login.
-- **Production.** `python app.py` runs Flask's development server. Serve with
-  gunicorn instead: `gunicorn --bind=0.0.0.0:5000 app:app`.
+- **Passwords.** Trainer/member logins get a random 10-character one-time password,
+  displayed once and required to be changed at first sign-in. Nothing is derived
+  from the phone number.
+- **Production.** `python app.py` runs Flask's development server, which prints a
+  warning on boot. Use the bundled launcher instead:
+
+  ```bash
+  SECRET_KEY=... PORT=5001 ./run.sh
+  ```
+
+  It runs gunicorn with 3 workers (override with `WEB_CONCURRENCY`). Note that
+  SQLite tolerates a handful of workers on one machine but is not a fit for
+  multi-server deployment.
 
 Other environment settings:
 
@@ -106,6 +120,18 @@ Other environment settings:
 GYM_DB_PATH=/path/to/gym_manager.db   # override the SQLite location
 DISABLE_PAYMENT_AUTOMATION=1          # skip the hourly reminder worker
 ```
+
+## Planned Work
+
+The Plan Engine — explainable, admin-approved workout and diet plans with
+circadian scheduling and non-overridable clinical safety gates — is specified in
+[`docs/plan-engine-spec.md`](docs/plan-engine-spec.md). Work is split across two
+branches that do not overlap:
+
+- [`docs/tasks/opencode-backend.md`](docs/tasks/opencode-backend.md) — schema,
+  generation, safety gate, approval routes, AI contract
+- [`docs/tasks/antigravity-frontend.md`](docs/tasks/antigravity-frontend.md) —
+  circadian service, admin review screen, member plan view
 
 ## WhatsApp Notes
 

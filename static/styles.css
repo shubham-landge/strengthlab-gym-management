@@ -1203,3 +1203,13 @@ pre {
   flex-direction: column;
   gap: 4px;
 }
+
+.credential-notice ul { margin: 8px 0; padding-left: 20px; }
+.credential-notice li { margin: 3px 0; font-weight: 600; }
+.credential-notice code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
