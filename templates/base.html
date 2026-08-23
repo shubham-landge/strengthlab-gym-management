@@ -107,6 +107,19 @@
   </aside>
 
   <main class="main">
+    {% set issued = issued_credentials() %}
+    {% if issued %}
+    <div class="notice warn credential-notice">
+      <strong>New sign-in details — shown once, note them down now.</strong>
+      <ul>
+        {% for credential in issued %}
+        <li>Login ID <code>{{ credential.username }}</code> · password <code>{{ credential.password }}</code></li>
+        {% endfor %}
+      </ul>
+      They are stored only as a hash, so they cannot be shown again. The member must
+      change the password at first sign-in. Use <em>Reset password</em> to issue a new one.
+    </div>
+    {% endif %}
     {% block content %}{% endblock %}
   </main>
 
