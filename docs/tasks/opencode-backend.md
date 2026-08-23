@@ -12,6 +12,16 @@
 It is entirely Python, entirely testable from the terminal, and needs no browser
 to verify. Every phase is provable with `pytest`.
 
+## Before you start — prior art
+
+An earlier attempt exists on `feature/ai-plan-engine-v2` with a
+`member_plan_versions` table storing whole plans as JSON blobs. **Do not build on
+it** — see spec §1 "Prior art". It cannot carry per-item rationale, which is the
+point of this feature. Your `plan_versions` + `plan_items` supersede it.
+
+Do not reintroduce `members.workout_plan_json` / `diet_plan_json`. Reading a
+column whose migration was left behind is exactly what broke the diet PDF.
+
 ## Setup
 
 ```bash

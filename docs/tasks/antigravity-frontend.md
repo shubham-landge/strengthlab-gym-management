@@ -15,6 +15,13 @@ screens that need to be *looked at* — the browser tooling in Antigravity is th
 right instrument for verifying them in both light and dark themes and at phone
 width, which matters because members use this on a phone.
 
+## Before you start — prior art
+
+`feature/ai-plan-engine-v2` has a plan version-history UI in
+`templates/member_detail.html` worth reading before you build Phase 5. Its data
+model is superseded (spec §1 "Prior art") but its screen layout is a reasonable
+starting point.
+
 ## Setup
 
 ```bash

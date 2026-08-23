@@ -27,6 +27,34 @@ plans, not to invent a new one.
 | Rule scoring | `calculate_need_score` | Confidence scores on plan items |
 | Health questionnaire | `member_health_profiles` table | Inputs to both the gate and the reasoning |
 
+### Prior art — `feature/ai-plan-engine-v2`
+
+There is an **earlier, unmerged attempt** at this feature on the remote branch
+`feature/ai-plan-engine-v2` (~745 changed lines in `app.py`). Know what is on it
+before you start:
+
+- It adds `member_plan_versions` — `version_number`, `plan_status` (defaults to
+  `draft`), `workout_plan_json` / `diet_plan_json`, `created_by`, `notes`.
+- It adds `workout_plan_json` and `diet_plan_json` columns to `members`.
+- It has **no rationale, no evidence, and no safety gate** — zero matches for
+  `rationale` or `blocked_reason` in the whole branch.
+
+**Decision: do not build on it.** It stores each plan as one JSON blob per
+version, which cannot support per-item rationale, per-item editing, or per-item
+evidence — the three things this feature exists to provide. The `plan_versions` +
+`plan_items` split in §3 is the right shape and supersedes it.
+
+Worth harvesting from it before it is retired: the version-history UI in
+`templates/member_detail.html`, and its JSON plan prompt work as a reference for
+§7.
+
+> **This branch is also the origin of a bug already fixed on
+> `chore/ci-and-hardening`.** `main` *reads* `member["diet_plan_json"]` in
+> `diet_pdf()` but has no migration creating that column — the function was
+> written against this branch's schema and shipped without it, so the diet PDF
+> returned HTTP 500 for every member. If you ever reintroduce a column read,
+> reintroduce its migration in the same commit.
+
 ### What is genuinely missing
 
 1. **Plans have no approval gate.** Workout and diet plans are free text saved
