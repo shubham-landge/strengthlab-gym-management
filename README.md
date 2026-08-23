@@ -121,6 +121,18 @@ GYM_DB_PATH=/path/to/gym_manager.db   # override the SQLite location
 DISABLE_PAYMENT_AUTOMATION=1          # skip the hourly reminder worker
 ```
 
+## Planned Work
+
+The Plan Engine — explainable, admin-approved workout and diet plans with
+circadian scheduling and non-overridable clinical safety gates — is specified in
+[`docs/plan-engine-spec.md`](docs/plan-engine-spec.md). Work is split across two
+branches that do not overlap:
+
+- [`docs/tasks/opencode-backend.md`](docs/tasks/opencode-backend.md) — schema,
+  generation, safety gate, approval routes, AI contract
+- [`docs/tasks/antigravity-frontend.md`](docs/tasks/antigravity-frontend.md) —
+  circadian service, admin review screen, member plan view
+
 ## WhatsApp Notes
 
 This version uses WhatsApp click-to-send URLs and a notification queue. For automated background sending, connect the queue to WhatsApp Business Cloud API or Twilio using your approved business number and credentials.
