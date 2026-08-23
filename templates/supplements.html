@@ -54,7 +54,7 @@
             {% endif %}
           </td>
           <td>
-            <form method="post" action="{{ url_for('supplements') }}" style="display:inline;">
+            <form method="post" action="{{ url_for('supplements') }}" style="display:inline;"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <input type="hidden" name="action" value="toggle_active">
               <input type="hidden" name="supp_id" value="{{ supp.id }}">
               <button class="link-button" type="submit">
@@ -81,7 +81,7 @@
       <a href="#" class="close-btn" style="font-size:1.5rem; text-decoration:none; color:var(--ink);">&times;</a>
     </div>
     
-    <form class="grid-form" method="post" action="{{ url_for('supplements') }}" style="display:flex; flex-direction:column; gap:12px;">
+    <form class="grid-form" method="post" action="{{ url_for('supplements') }}" style="display:flex; flex-direction:column; gap:12px;"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="action" value="add">
       
       <label>Supplement Name<input name="name" required placeholder="e.g. Magnesium Glycinate"></label>

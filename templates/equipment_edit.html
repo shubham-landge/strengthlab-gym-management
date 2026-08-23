@@ -6,7 +6,7 @@
 </header>
 
 <section class="panel">
-  <form class="grid-form compact" method="post">
+  <form class="grid-form compact" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Name<input name="name" value="{{ item.name }}" required></label>
     <label>Category<input name="category" value="{{ item.category or '' }}"></label>
     <label>Quantity<input name="quantity" type="number" min="0" value="{{ item.quantity }}"></label>

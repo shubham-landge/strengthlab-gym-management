@@ -9,19 +9,23 @@
 </header>
 
 <section class="bento-grid">
-  <article class="stat bento-span-3"><span>Monthly collections</span><strong>Rs {{ "%.0f"|format(monthly_revenue) }}</strong><small>Received payments this month</small></article>
-  <article class="stat bento-span-3"><span>Outstanding dues</span><strong>Rs {{ "%.0f"|format(due_total) }}</strong><small>{{ watch.unpaid_members }} unpaid members</small></article>
+  <article class="stat bento-span-3"><span>Monthly collections</span><strong>Rs {{ money(monthly_revenue) }}</strong><small>Received payments this month</small></article>
+  <article class="stat bento-span-3"><span>Outstanding dues</span><strong>Rs {{ money(due_total) }}</strong><small>{{ watch.unpaid_members }} unpaid members</small></article>
   <article class="stat bento-span-3"><span>Expiring in 14 days</span><strong>{{ watch.expiring_7 + watch.expiring_14 }}</strong><small>{{ watch.expiring_7 }} need action this week</small></article>
   <article class="stat bento-span-3"><span>Member status</span><strong>{{ watch.active_members }}</strong><small>{{ watch.expired_members }} expired, {{ watch.frozen_members }} frozen</small></article>
 
   <article class="panel chart-panel bento-span-7">
     <div class="section-title"><h2>Revenue velocity</h2><small>Daily collections this month</small></div>
+    {% if charts.daily_points|length > 1 %}
     <svg class="line-chart" viewBox="0 0 300 140" role="img">
       <polyline points="{% for point in charts.daily_points %}{{ point.x }},{{ point.y }} {% endfor %}" />
       {% for point in charts.daily_points %}
-      <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4"><title>{{ point.day }} Rs {{ point.total }}</title></circle>
+      <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4"><title>{{ point.day }} Rs {{ money(point.total) }}</title></circle>
       {% endfor %}
     </svg>
+    {% else %}
+    <p class="empty">Not enough data yet. The trend line appears once collections land on two or more days.</p>
+    {% endif %}
   </article>
   <article class="panel bento-span-5">
     <div class="section-title"><h2>Payment split</h2><small>Cash, UPI, card, bank</small></div>

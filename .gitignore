@@ -4,3 +4,6 @@ __pycache__/
 gym_manager.db
 instance/
 .env
+.secret_key
+.pytest_cache/
+.DS_Store

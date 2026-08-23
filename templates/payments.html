@@ -5,7 +5,7 @@
   <div class="actions">
     <a class="button primary" href="#payment-drawer">+ Add payment</a>
     <a class="button" href="{{ url_for('export_payments_excel') }}">Export Excel</a>
-    <form method="post" action="{{ url_for('run_payment_reminders') }}">
+    <form method="post" action="{{ url_for('run_payment_reminders') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="button" type="submit">Run reminders</button>
     </form>
   </div>
@@ -19,7 +19,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg>
       </div>
     </div>
-    <strong>Rs {{ "%.0f"|format(finance.mrr) }}</strong>
+    <strong>Rs {{ money(finance.mrr) }}</strong>
     <small>Collected + pending this month</small>
   </div>
   <div class="stat">
@@ -28,7 +28,7 @@
     {% set collected_pct = ((finance.current_month_collected / total_flow) * 100) if total_flow else 0 %}
     <strong>{{ "%.0f"|format(collected_pct) }}%</strong>
     <div class="finance-gauge" style="margin-top:8px"><i style="width: {{ collected_pct }}%"></i></div>
-    <small>Rs {{ "%.0f"|format(finance.current_month_collected) }} of Rs {{ "%.0f"|format(total_flow) }}</small>
+    <small>Rs {{ money(finance.current_month_collected) }} of Rs {{ money(total_flow) }}</small>
   </div>
   <div class="stat">
     <div class="stat-header">
@@ -62,12 +62,16 @@
 <section class="finance-visuals">
   <article class="panel chart-panel">
     <div class="section-title"><h2>Revenue velocity</h2><small>Daily collections this month</small></div>
+    {% if charts.daily_points|length > 1 %}
     <svg class="line-chart" viewBox="0 0 300 140" role="img">
       <polyline points="{% for point in charts.daily_points %}{{ point.x }},{{ point.y }} {% endfor %}" />
       {% for point in charts.daily_points %}
-      <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4"><title>{{ point.day }} · Rs {{ point.total }}</title></circle>
+      <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4"><title>{{ point.day }} · Rs {{ money(point.total) }}</title></circle>
       {% endfor %}
     </svg>
+    {% else %}
+    <p class="empty">Not enough data yet. The trend line appears once collections land on two or more days.</p>
+    {% endif %}
   </article>
   <article class="panel chart-panel">
     <div class="section-title"><h2>Payment method split</h2><small>Cash flow settlement</small></div>
@@ -94,7 +98,7 @@
       <a class="button" href="#">Close</a>
     </div>
     <p class="drawer-copy">Record a due or received payment, attach settlement details, and queue the right WhatsApp receipt or reminder.</p>
-    <form class="drawer-form" method="post">
+    <form class="drawer-form" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>Member<select name="member_id" required>{% for member in members %}<option value="{{ member.id }}">{{ member.name }}</option>{% endfor %}</select></label>
       <div class="drawer-two">
         <label>Amount<input name="amount" type="number" step="0.01" placeholder="Amount" required></label>
@@ -121,7 +125,7 @@
 
 <section class="panel">
   <div class="section-title"><h2>Automated reminder queue</h2><a class="queue-live" href="{{ url_for('announcements') }}"><span></span>WhatsApp center</a></div>
-  <form method="post" action="{{ url_for('payment_batch_action') }}">
+  <form method="post" action="{{ url_for('payment_batch_action') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="batch-actions">
       <label class="check select-all"><input type="checkbox" data-select-all="notification_ids"> Select all queued</label>
       <button class="button" name="action" value="queue_reminders">Batch send reminders</button>
@@ -166,7 +170,7 @@
     <button class="button primary" type="submit">Filter</button>
     <a class="button" href="{{ url_for('payments') }}">Clear</a>
   </form>
-  <form method="post" action="{{ url_for('payment_batch_action') }}">
+  <form method="post" action="{{ url_for('payment_batch_action') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="batch-actions table-title">
       <label class="check select-all"><input type="checkbox" data-select-all="payment_ids"> Select all</label>
       <button class="button" name="action" value="queue_reminders">Send reminders</button>
@@ -193,8 +197,8 @@
           <td><input type="checkbox" name="payment_ids" value="{{ payment.id }}"></td>
           <td data-label="Invoice">{{ payment.invoice_number or "—" }}</td>
           <td data-label="Member">{{ payment.member_name }}</td>
-          <td data-label="Amount">Rs {{ payment.amount }}</td>
-          <td data-label="Net">Rs {{ payment.net_amount or payment.amount }}</td>
+          <td data-label="Amount">Rs {{ money(payment.amount) }}</td>
+          <td data-label="Net">Rs {{ money(payment.net_amount or payment.amount) }}</td>
           <td data-label="Status"><span class="pill {{ 'good' if payment.status == 'Received' else 'warn' }}">{{ payment.status }}</span></td>
           <td data-label="Method">{{ payment.payment_method or "—" }}</td>
           <td data-label="Date">{{ payment.paid_on or payment.due_on }}</td>
@@ -223,8 +227,8 @@
           <td>{{ renewal.plan_name }}</td>
           <td>{{ renewal.renewal_start }}</td>
           <td>{{ renewal.renewal_end }}</td>
-          <td>Rs {{ renewal.amount }}</td>
-          <td>Rs {{ renewal.discount_amount or 0 }}</td>
+          <td>Rs {{ money(renewal.amount) }}</td>
+          <td>Rs {{ money(renewal.discount_amount) }}</td>
           <td>{{ renewal.payment_method }}</td>
         </tr>
         {% else %}

@@ -2,16 +2,16 @@
 {% block content %}
 <header class="page-header">
   <div><p class="eyebrow">Accounting</p><h1>Collections dashboard</h1></div>
-  <form method="post" action="{{ url_for('run_payment_reminders') }}">
+  <form method="post" action="{{ url_for('run_payment_reminders') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button class="button primary" type="submit">Run reminders</button>
   </form>
 </header>
 
 <section class="stats-grid">
-  <div class="stat"><span>MRR projection</span><strong>Rs {{ "%.0f"|format(finance.mrr) }}</strong><small>This month collected + pending</small></div>
-  <div class="stat"><span>Pending dues</span><strong>Rs {{ "%.0f"|format(finance.due_total) }}</strong><small>{{ watch.unpaid_members }} unpaid members</small></div>
-  <div class="stat"><span>UPI</span><strong>Rs {{ "%.0f"|format(finance.upi_total) }}</strong><small>Settled digitally</small></div>
-  <div class="stat"><span>Cash + bank</span><strong>Rs {{ "%.0f"|format(finance.cash_total + finance.bank_total) }}</strong><small>Counter collections</small></div>
+  <div class="stat"><span>MRR projection</span><strong>Rs {{ money(finance.mrr) }}</strong><small>This month collected + pending</small></div>
+  <div class="stat"><span>Pending dues</span><strong>Rs {{ money(finance.due_total) }}</strong><small>{{ watch.unpaid_members }} unpaid members</small></div>
+  <div class="stat"><span>UPI</span><strong>Rs {{ money(finance.upi_total) }}</strong><small>Settled digitally</small></div>
+  <div class="stat"><span>Cash + bank</span><strong>Rs {{ money(finance.cash_total + finance.bank_total) }}</strong><small>Counter collections</small></div>
 </section>
 
 <section class="finance-visuals">
@@ -40,7 +40,7 @@
     <div class="section-title"><h2>Due payments</h2><a href="{{ url_for('payments') }}">Open payments</a></div>
     <div class="stack">
       {% for payment in payments_due %}
-      <div class="item-row"><div><strong>{{ payment.member_name }}</strong><small>Due {{ payment.due_on }}</small></div><span>Rs {{ payment.amount }}</span></div>
+      <div class="item-row"><div><strong>{{ payment.member_name }}</strong><small>Due {{ payment.due_on }}</small></div><span>Rs {{ money(payment.amount) }}</span></div>
       {% else %}
       <p class="empty">No due payment records.</p>
       {% endfor %}
@@ -65,7 +65,7 @@
       <thead><tr><th>Member</th><th>Amount</th><th>Status</th><th>Method</th><th>Date</th></tr></thead>
       <tbody>
         {% for payment in recent_payments %}
-        <tr><td>{{ payment.member_name }}</td><td>Rs {{ payment.amount }}</td><td><span class="pill {{ 'good' if payment.status == 'Received' else 'warn' }}">{{ payment.status }}</span></td><td>{{ payment.payment_method or "-" }}</td><td>{{ payment.paid_on or payment.due_on }}</td></tr>
+        <tr><td>{{ payment.member_name }}</td><td>Rs {{ money(payment.amount) }}</td><td><span class="pill {{ 'good' if payment.status == 'Received' else 'warn' }}">{{ payment.status }}</span></td><td>{{ payment.payment_method or "-" }}</td><td>{{ payment.paid_on or payment.due_on }}</td></tr>
         {% endfor %}
       </tbody>
     </table>

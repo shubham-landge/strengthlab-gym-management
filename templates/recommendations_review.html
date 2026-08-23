@@ -6,12 +6,12 @@
     <h1>Review Recommendations: {{ member.name }}</h1>
   </div>
   <div class="actions">
-    <form method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}" style="display:inline;">
+    <form method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}" style="display:inline;"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="action" value="generate">
       <button class="button" type="submit">Refresh Drafts</button>
     </form>
     
-    <form method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}" style="display:inline;">
+    <form method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}" style="display:inline;"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="action" value="send_to_member">
       <button class="button primary" type="submit" {% if sent_count == 0 %}disabled{% endif %}>Send to Member</button>
     </form>
@@ -82,7 +82,7 @@
       <!-- Action Buttons -->
       <div style="display:flex; gap:10px; margin-top:10px;">
         {% if rec.status != 'approved' and rec.status != 'sent' %}
-        <form method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}" style="display:inline;">
+        <form method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}" style="display:inline;"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="hidden" name="action" value="approve">
           <input type="hidden" name="rec_id" value="{{ rec.id }}">
           <button class="button primary" style="padding: 6px 12px; font-size:0.8rem;" type="submit">Approve</button>
@@ -90,7 +90,7 @@
         {% endif %}
         
         {% if rec.status != 'rejected' %}
-        <form method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}" style="display:inline;">
+        <form method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}" style="display:inline;"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="hidden" name="action" value="reject">
           <input type="hidden" name="rec_id" value="{{ rec.id }}">
           <button class="button" style="padding: 6px 12px; font-size:0.8rem;" type="submit">Reject</button>
@@ -104,7 +104,7 @@
       <div id="edit-rec-{{ rec.id }}" class="modal-overlay">
         <div class="modal-content panel" style="max-width: 500px;">
           <h3>Edit Recommendation</h3>
-          <form class="grid-form" method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}">
+          <form class="grid-form" method="post" action="{{ url_for('recommendations_review', member_id=member.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="action" value="edit">
             <input type="hidden" name="rec_id" value="{{ rec.id }}">
 

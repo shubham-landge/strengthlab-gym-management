@@ -9,7 +9,7 @@
 </header>
 
 <section class="bento-grid">
-  <article class="stat bento-span-3"><span>MRR projection</span><strong>Rs {{ "%.0f"|format(finance.mrr) }}</strong><small>Collected + pending this month</small></article>
+  <article class="stat bento-span-3"><span>MRR projection</span><strong>Rs {{ money(finance.mrr) }}</strong><small>Collected + pending this month</small></article>
   <article class="stat bento-span-3"><span>Active members</span><strong>{{ watch.active_members }}</strong><small>{{ watch.expiring_7 }} expiring in 7 days</small></article>
   <article class="stat bento-span-3"><span>Churn risk</span><strong>{{ finance.churn_risk }}</strong><small>Expired in past 48 hours</small></article>
   <article class="stat bento-span-3"><span>Check-ins today</span><strong>{{ watch.checkins_today }}</strong><small>{{ watch.checkins_7_days }} visits in 7 days</small></article>
@@ -21,20 +21,24 @@
     <div class="split-metric"><strong>{{ "%.0f"|format(collected_pct) }}%</strong><span>collection health</span></div>
     <div class="finance-gauge"><i style="width: {{ collected_pct }}%"></i></div>
     <div class="mini-grid">
-      <div><span>Collected</span><strong>Rs {{ "%.0f"|format(finance.current_month_collected) }}</strong></div>
-      <div><span>Pending</span><strong>Rs {{ "%.0f"|format(finance.current_month_pending) }}</strong></div>
+      <div><span>Collected</span><strong>Rs {{ money(finance.current_month_collected) }}</strong></div>
+      <div><span>Pending</span><strong>Rs {{ money(finance.current_month_pending) }}</strong></div>
       <div><span>Unpaid</span><strong>{{ watch.unpaid_members }}</strong></div>
     </div>
   </article>
 
   <article class="panel chart-panel bento-span-6">
     <div class="section-title"><h2>Revenue velocity</h2><small>Daily collections this month</small></div>
+    {% if charts.daily_points|length > 1 %}
     <svg class="line-chart" viewBox="0 0 300 140" role="img">
       <polyline points="{% for point in charts.daily_points %}{{ point.x }},{{ point.y }} {% endfor %}" />
       {% for point in charts.daily_points %}
-      <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4"><title>{{ point.day }} Rs {{ point.total }}</title></circle>
+      <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4"><title>{{ point.day }} Rs {{ money(point.total) }}</title></circle>
       {% endfor %}
     </svg>
+    {% else %}
+    <p class="empty">Not enough data yet. The trend line appears once collections land on two or more days.</p>
+    {% endif %}
   </article>
 </section>
 
@@ -47,9 +51,9 @@
       {% endfor %}
     </div>
     <div class="stack">
-      <div class="item-row"><span>Cash collected</span><strong>Rs {{ "%.0f"|format(finance.cash_total) }}</strong></div>
-      <div class="item-row"><span>UPI collected</span><strong>Rs {{ "%.0f"|format(finance.upi_total) }}</strong></div>
-      <div class="item-row"><span>Card collected</span><strong>Rs {{ "%.0f"|format(finance.card_total) }}</strong></div>
+      <div class="item-row"><span>Cash collected</span><strong>Rs {{ money(finance.cash_total) }}</strong></div>
+      <div class="item-row"><span>UPI collected</span><strong>Rs {{ money(finance.upi_total) }}</strong></div>
+      <div class="item-row"><span>Card collected</span><strong>Rs {{ money(finance.card_total) }}</strong></div>
       <div class="item-row"><span>Bank transfer</span><strong>Rs {{ "%.0f"|format(finance.bank_total) }}</strong></div>
     </div>
   </div>

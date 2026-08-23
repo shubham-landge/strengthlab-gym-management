@@ -11,7 +11,7 @@
   </div>
 </header>
 
-<form method="post" class="edit-layout">
+<form method="post" class="edit-layout"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <section class="panel">
     <div class="section-title"><h2>Personal details</h2></div>
     <div class="grid-form">
@@ -156,11 +156,23 @@
 
   <section class="panel">
     <div class="section-title"><h2>Member login</h2></div>
+    {% if login_error %}
+    <p class="notice bad">{{ login_error }}</p>
+    {% endif %}
+    {% if login_conflict and not member_login %}
+    <p class="notice warn">
+      <strong>No login could be created.</strong>
+      The login ID <code>{{ login_conflict.login_id }}</code> from this phone number already belongs to
+      {% if login_conflict.holder_name %}{{ login_conflict.holder_name }} ({{ login_conflict.holder_role }}){% else %}another {{ login_conflict.holder_role }}{% endif %}.
+      Give this member a different login ID below, or use a different phone number.
+    </p>
+    {% endif %}
     <div class="grid-form">
-      <div class="readonly-field">
-        <span>Username</span>
-        <strong>{{ member_login.username if member_login else "Will be created from phone" }}</strong>
-      </div>
+      <label>Login ID
+        <input name="login_id" value="{{ member_login.username if member_login else '' }}"
+               placeholder="{{ login_conflict.login_id ~ ' is taken - choose another' if login_conflict and not member_login else 'Leave blank to use the phone number' }}"
+               autocomplete="off">
+      </label>
       <label>New password<input name="new_password" type="password" autocomplete="new-password" placeholder="Leave blank to keep current password"></label>
       <div class="readonly-field">
         <span>Default password</span>
@@ -168,7 +180,7 @@
       </div>
       <div class="readonly-field">
         <span>Status</span>
-        <strong>{{ "Active" if not member_login or member_login.active else "Inactive" }}</strong>
+        <strong>{% if not member_login %}No login yet{% elif member_login.active %}Active{% else %}Inactive{% endif %}</strong>
       </div>
     </div>
   </section>

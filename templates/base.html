@@ -99,7 +99,7 @@
       </div>
       <div class="sidebar-footer-actions">
         <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Toggle theme">Light</button>
-        <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+        <form method="post" action="{{ url_for('logout') }}" class="logout-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit">Sign out</button>
         </form>
       </div>
@@ -158,7 +158,7 @@
         <a href="{{ url_for('supplements') }}">Supplement Library</a>
         {% endif %}
         <button type="button" id="mobile-theme-toggle" class="theme-toggle">Light mode</button>
-        <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+        <form method="post" action="{{ url_for('logout') }}" class="logout-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit">Sign out</button>
         </form>
       </nav>
