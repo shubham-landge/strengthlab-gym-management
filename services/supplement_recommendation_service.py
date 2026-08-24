@@ -168,6 +168,33 @@ def safety_gate(member, health_profile, supplement):
     return red_flags
 
 
+def plan_safety_gate(member, health_profile):
+    """
+    Reuses the supplement safety_gate contract to evaluate whether a workout
+    or diet plan should be blocked due to health contraindications.
+
+    Calls safety_gate with a representative supplement (Creatine monohydrate)
+    because it triggers both kidney and liver branches, and the medication
+    branch is supplement-agnostic.  Returns a list of plan-centric blocking
+    reasons; an empty list means the plan may proceed to review.
+    """
+    # Creatine monohydrate triggers pregnancy, kidney, liver, and medication gates
+    warnings = safety_gate(member, health_profile, "Creatine monohydrate")
+    reasons = []
+    for w in warnings:
+        if "Pregnancy/lactation" in w:
+            reasons.append("Pregnancy/lactation status. All exercise and nutrition plans require formal clinician clearance.")
+        elif "kidney disease" in w.lower():
+            reasons.append("Active kidney disease reported. Plan review required due to renal clearance and protein load considerations.")
+        elif "liver condition" in w.lower():
+            reasons.append("Liver condition reported. Plan review required to prevent hepatotoxicity and metabolic stress.")
+        elif "medication" in w.lower():
+            reasons.append("Currently taking active medications. Exercise and nutrition plans require clinician review for potential interactions.")
+        else:
+            reasons.append(w)
+    return reasons
+
+
 def get_recommendation_level(score, safety_warnings, is_contraindicated=False):
     """
     Determines recommendation level based on need score and safety warning flags.
