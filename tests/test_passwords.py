@@ -1,5 +1,6 @@
 """Temporary passwords must be random, single-use, and never phone-derived."""
 
+import datetime
 import re
 
 import app as gym_app
@@ -99,3 +100,32 @@ def test_seeding_outside_a_request_does_not_crash():
     assert not gym_app.has_request_context(), "this test needs a bare context"
     gym_app.remember_issued_credential("someone", "secret123")  # must be a no-op
     assert gym_app.take_issued_credentials() == []
+
+
+# --- reset token expiry ------------------------------------------------------
+
+def test_expired_reset_token_is_rejected(client):
+    with gym_app.app.app_context():
+        user = gym_app.query_one("SELECT * FROM users WHERE role = 'member' LIMIT 1")
+        old_token = "expired-test-token"
+        expired_at = (datetime.datetime.now() - datetime.timedelta(hours=gym_app.RESET_TOKEN_HOURS + 1)).strftime("%Y-%m-%d %H:%M:%S")
+        gym_app.execute(
+            "UPDATE users SET reset_token = ?, reset_token_created_at = ? WHERE id = ?",
+            (old_token, expired_at, user["id"]),
+        )
+    response = client.get(f"/reset-password/{old_token}")
+    assert b"Invalid or expired reset link" in response.data
+
+
+def test_fresh_reset_token_is_accepted(client):
+    with gym_app.app.app_context():
+        user = gym_app.query_one("SELECT * FROM users WHERE role = 'member' LIMIT 1")
+        fresh_token = "fresh-test-token"
+        fresh_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        gym_app.execute(
+            "UPDATE users SET reset_token = ?, reset_token_created_at = ? WHERE id = ?",
+            (fresh_token, fresh_at, user["id"]),
+        )
+    response = client.get(f"/reset-password/{fresh_token}")
+    assert response.status_code == 200
+    assert b"Invalid or expired reset link" not in response.data
