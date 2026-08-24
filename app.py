@@ -1218,6 +1218,33 @@ def init_db():
         """
     )
 
+    # Exactly one approved version may be live per member and plan type. Repeated
+    # migrations left some members with several, so older ones are retired before
+    # the unique index is created - otherwise the index creation itself fails and
+    # the migration is stuck. approve_plan_version() supersedes the prior version
+    # before promoting the new one inside one transaction, so the index never
+    # fires during a normal approval.
+    stale_approved = cursor.execute(
+        """
+        SELECT id FROM plan_versions
+        WHERE status = 'approved' AND id NOT IN (
+            SELECT MAX(id) FROM plan_versions WHERE status = 'approved'
+            GROUP BY member_id, plan_type
+        )
+        """
+    ).fetchall()
+    for (version_id,) in stale_approved:
+        cursor.execute(
+            "UPDATE plan_versions SET status = 'superseded' WHERE id = ?",
+            (version_id,),
+        )
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_versions_one_approved
+        ON plan_versions (member_id, plan_type) WHERE status = 'approved'
+        """
+    )
+
     plan_item_columns = {row[1] for row in cursor.execute("PRAGMA table_info(plan_items)").fetchall()}
     if "provenance" not in plan_item_columns:
         cursor.execute(
