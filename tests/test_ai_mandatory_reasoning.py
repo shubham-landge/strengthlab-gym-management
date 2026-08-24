@@ -9,6 +9,8 @@ Covers:
 - AI output is never auto-approved
 """
 
+import json
+
 import pytest
 
 import app as gym_app
@@ -103,6 +105,70 @@ def test_ai_prompt_includes_response_schema():
     prompt = gym_app.ai_plan_prompt(member, plan_type="workout")
     assert "response_schema" in prompt
     assert "workout" in prompt["response_schema"]
+
+
+# --- data minimization / security --------------------------------------------
+
+DIRECT_IDENTIFIERS = ("name", "phone", "email", "address", "emergency_contact")
+
+
+def test_ai_prompt_member_payload_excludes_direct_identifiers():
+    member = member_row(
+        name="Alice Smith",
+        phone="555-1234",
+        email="alice@example.com",
+        address="123 Main St",
+        emergency_contact="Bob 555-5678",
+    )
+    prompt = gym_app.ai_plan_prompt(member, plan_type="workout")
+    member_payload = prompt["member"]
+    for field in DIRECT_IDENTIFIERS:
+        assert field not in member_payload, f"PII field '{field}' must not be in AI payload"
+
+
+def test_ai_prompt_json_does_not_contain_identifier_values():
+    member = member_row(
+        name="Alice Smith",
+        phone="555-1234",
+        email="alice@example.com",
+        address="123 Main St",
+        emergency_contact="Bob 555-5678",
+    )
+    prompt = gym_app.ai_plan_prompt(member, plan_type="workout")
+    serialized = json.dumps(prompt)
+    for value in ("Alice Smith", "555-1234", "alice@example.com", "123 Main St", "Bob 555-5678"):
+        assert value not in serialized, f"Identifier value '{value}' must not appear in serialized AI prompt"
+
+
+def test_ai_prompt_retains_required_fitness_health_facts():
+    member = member_row(
+        goal="Fat loss",
+        fitness_level="Beginner",
+        injury_notes="Knee pain",
+        medical_notes="Asthma",
+        primary_fitness_goal="Strength",
+        activity_level="Lightly Active",
+        medical_conditions="Hypertension",
+        dietary_style="Vegetarian",
+        food_exclusions="Dairy",
+    )
+    prompt = gym_app.ai_plan_prompt(member, plan_type="workout")
+    payload = prompt["member"]
+    assert payload["goal"] == "Fat loss"
+    assert payload["fitness_level"] == "Beginner"
+    assert payload["injury_notes"] == "Knee pain"
+    assert payload["medical_notes"] == "Asthma"
+    assert payload["primary_fitness_goal"] == "Strength"
+    assert payload["activity_level"] == "Lightly Active"
+    assert payload["medical_conditions"] == ["Hypertension"]
+    assert payload["dietary_style"] == "Vegetarian"
+    assert payload["food_exclusions"] == ["Dairy"]
+    assert "age" in payload
+    assert "height_cm" in payload
+    assert "weight_kg" in payload
+    assert "bmi" in payload
+    assert "circadian_slots" in prompt
+    assert "available_gym_equipment" in prompt
 
 
 # --- validation helpers ------------------------------------------------------

@@ -2077,7 +2077,6 @@ def generate_plan_draft(member, plan_type, customizations=None):
 
 def member_ai_payload(member):
     return {
-        "name": member["name"],
         "age": member["age"],
         "gender": member["gender"],
         "height_cm": member["height_cm"],
