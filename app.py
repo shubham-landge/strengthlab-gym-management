@@ -63,6 +63,7 @@ PAYMENT_REMINDER_INTERVAL_SECONDS = int(os.environ.get("PAYMENT_REMINDER_INTERVA
 # Stop chasing a lapsed membership after this many days, so long-gone members do
 # not receive a WhatsApp reminder every single day forever.
 OVERDUE_REMINDER_WINDOW_DAYS = int(os.environ.get("OVERDUE_REMINDER_WINDOW_DAYS", "30"))
+RESET_TOKEN_HOURS = int(os.environ.get("RESET_TOKEN_HOURS", "24"))
 _payment_automation_started = False
 _payment_automation_lock = threading.Lock()
 _startup_ready = False
@@ -2011,33 +2012,44 @@ def service_level(member, field_name, default="Regular"):
     return value
 
 
+def _preview_field(form, member, key):
+    """Return the submitted value when the key is present, else the stored value.
+
+    Using ``form.get(key) or member[key]`` hides explicitly cleared fields
+    because an empty string is falsy.  This helper preserves the clear.
+    """
+    if key in form:
+        return form.get(key)
+    return member[key]
+
+
 def member_preview_from_form(member, form):
     preview = dict(member)
     preview.update(
         {
-            "name": form.get("name") or member["name"],
-            "phone": form.get("phone") or member["phone"],
-            "email": form.get("email") or member["email"],
-            "age": form.get("age") or member["age"],
-            "gender": form.get("gender") or member["gender"],
-            "height_cm": form.get("height_cm") or member["height_cm"],
-            "weight_kg": form.get("weight_kg") or member["weight_kg"],
-            "goal": form.get("goal") or member["goal"],
-            "fitness_level": form.get("fitness_level") or member["fitness_level"],
-            "food_preference": form.get("food_preference") or member["food_preference"],
-            "medical_notes": form.get("medical_notes") or member["medical_notes"],
-            "injury_notes": form.get("injury_notes") or member["injury_notes"],
-            "plan_name": form.get("plan_name") or member["plan_name"],
+            "name": _preview_field(form, member, "name"),
+            "phone": _preview_field(form, member, "phone"),
+            "email": _preview_field(form, member, "email"),
+            "age": _preview_field(form, member, "age"),
+            "gender": _preview_field(form, member, "gender"),
+            "height_cm": _preview_field(form, member, "height_cm"),
+            "weight_kg": _preview_field(form, member, "weight_kg"),
+            "goal": _preview_field(form, member, "goal"),
+            "fitness_level": _preview_field(form, member, "fitness_level"),
+            "food_preference": _preview_field(form, member, "food_preference"),
+            "medical_notes": _preview_field(form, member, "medical_notes"),
+            "injury_notes": _preview_field(form, member, "injury_notes"),
+            "plan_name": _preview_field(form, member, "plan_name"),
             "workout_subscription": form.get("workout_subscription") or service_level(member, "workout_subscription"),
             "diet_subscription": form.get("diet_subscription") or service_level(member, "diet_subscription", "None"),
             "premium": 1
             if form.get("workout_subscription") == "Premium" or form.get("diet_subscription") == "Premium"
             else member["premium"],
-            "workout_plan": form.get("workout_plan") or member["workout_plan"],
-            "diet_plan": form.get("diet_plan") or member["diet_plan"],
-            "wake_time": form.get("wake_time") or member["wake_time"],
-            "sleep_time": form.get("sleep_time") or member["sleep_time"],
-            "workout_time": form.get("workout_time") or member["workout_time"],
+            "workout_plan": _preview_field(form, member, "workout_plan"),
+            "diet_plan": _preview_field(form, member, "diet_plan"),
+            "wake_time": _preview_field(form, member, "wake_time"),
+            "sleep_time": _preview_field(form, member, "sleep_time"),
+            "workout_time": _preview_field(form, member, "workout_time"),
         }
     )
     return preview
@@ -3046,7 +3058,7 @@ def _approved_diet_items(member_id):
     )
     if not version:
         return None
-    return query_all(
+    rows = query_all(
         """
         SELECT * FROM plan_items
         WHERE plan_version_id = ? AND item_type IN ('meal', 'hydration', 'supplement')
@@ -3054,6 +3066,7 @@ def _approved_diet_items(member_id):
         """,
         (version["id"],),
     )
+    return [dict(row) for row in rows]
 
 
 def personalized_today_plan(member):
@@ -3711,6 +3724,13 @@ def forgot_password():
 def reset_password(token):
     user = query_one("SELECT * FROM users WHERE reset_token = ? AND active = 1", (token,))
     error = None
+    if user and user["reset_token_created_at"]:
+        try:
+            created = datetime.strptime(user["reset_token_created_at"], "%Y-%m-%d %H:%M:%S")
+            if datetime.now() - created > timedelta(hours=RESET_TOKEN_HOURS):
+                user = None
+        except ValueError:
+            user = None
     if not user:
         return render_template("reset_password.html", error="Invalid or expired reset link.", token=token)
     if request.method == "POST":
@@ -5452,17 +5472,15 @@ def diet_pdf(member_id):
         y = draw_wrapped("No workout plan generated yet.", y)
     y -= 8
     y = draw_section_header("Nutrition Recipe Cards", y)
-    diet_text = member["diet_plan"] or ""
-    diet_json = None
-    if diet_text:
-        try:
-            diet_json = json.loads(diet_text)
-        except (TypeError, ValueError):
-            diet_json = None
-    if isinstance(diet_json, dict) and diet_json.get("meals"):
-        y = draw_recipe_cards_from_json(diet_json, y)
+    approved_diet_items = _approved_diet_items(member_id)
+    if approved_diet_items:
+        goal = member_text(member, "primary_fitness_goal") or member_text(member, "goal", "general fitness")
+        calories, protein, carbs, fat = nutrition_targets(member, goal)
+        food_preference = member_text(member, "food_preference", "balanced local meals")
+        diet_text = _build_diet_text(member, calories, protein, carbs, fat, food_preference, approved_diet_items)
     else:
-        y = draw_recipe_cards(diet_text or "No diet plan generated yet.", y)
+        diet_text = "No approved diet plan is available yet. Ask staff to review and approve your plan."
+    y = draw_wrapped(diet_text, y)
     y -= 8
     y = draw_section_header("Safety and Coach Notes", y)
     y = draw_instruction_panel(
@@ -5587,24 +5605,26 @@ def recommendations_review(member_id):
         elif action == "approve":
             rec_id = request.form.get("rec_id")
             note = request.form.get("note", "").strip()
-            execute("UPDATE member_recommendations SET status = 'approved' WHERE id = ? AND member_id = ?", (rec_id, member_id))
             user = current_user()
-            execute(
-                "INSERT INTO recommendation_reviews (recommendation_id, reviewed_by, status, review_note) VALUES (?, ?, 'approved', ?)",
-                (rec_id, user["id"], note or "Approved"),
-            )
+            with transaction() as conn:
+                conn.execute("UPDATE member_recommendations SET status = 'approved' WHERE id = ? AND member_id = ?", (rec_id, member_id))
+                conn.execute(
+                    "INSERT INTO recommendation_reviews (recommendation_id, reviewed_by, status, review_note) VALUES (?, ?, 'approved', ?)",
+                    (rec_id, user["id"], note or "Approved"),
+                )
         elif action == "reject":
             rec_id = request.form.get("rec_id")
             note = request.form.get("note", "").strip()
             if not note:
                 flash("Rejection requires a note.", "error")
                 return redirect(url_for("recommendations_review", member_id=member_id))
-            execute("UPDATE member_recommendations SET status = 'rejected' WHERE id = ? AND member_id = ?", (rec_id, member_id))
             user = current_user()
-            execute(
-                "INSERT INTO recommendation_reviews (recommendation_id, reviewed_by, status, review_note) VALUES (?, ?, 'rejected', ?)",
-                (rec_id, user["id"], note),
-            )
+            with transaction() as conn:
+                conn.execute("UPDATE member_recommendations SET status = 'rejected' WHERE id = ? AND member_id = ?", (rec_id, member_id))
+                conn.execute(
+                    "INSERT INTO recommendation_reviews (recommendation_id, reviewed_by, status, review_note) VALUES (?, ?, 'rejected', ?)",
+                    (rec_id, user["id"], note),
+                )
         elif action == "edit":
             rec_id = request.form.get("rec_id")
             execute(
