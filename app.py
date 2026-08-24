@@ -2077,36 +2077,250 @@ def equipment_names():
 
 
 def ai_plan_prompt(member, customizations=None, plan_type="both"):
+    from services import circadian_service
+
+    wake = member_text(member, "wake_time") or None
+    workout_time = member_text(member, "workout_time") or None
+    sleep = member_text(member, "sleep_time") or None
+    slots = circadian_service.build_day_slots(wake, workout_time, sleep)
+
+    item_schema = {
+        "slot_time": "HH:MM from circadian_slots",
+        "item_type": "exercise | meal | hydration | supplement | recovery",
+        "title": "string",
+        "detail": "string",
+        "rationale": "string (minimum 40 characters)",
+        "evidence": {"grade": "A|B|C|D", "source": "string", "url": "string (optional)"},
+        "confidence": "High | Medium | Low",
+    }
+    day_schema = {"day_label": "string", "items": [item_schema]}
+
+    response_schema = {}
+    if plan_type in ("both", "workout"):
+        response_schema["workout"] = {"plan_type": "workout", "days": [day_schema]}
+    if plan_type in ("both", "diet"):
+        response_schema["diet"] = {"plan_type": "diet", "days": [day_schema]}
+
     return {
-        "task": "Create a safe, practical gym workout plan and diet plan for this member.",
+        "task": "Create a safe, practical gym plan for this member.",
         "requested_plan_type": plan_type,
         "member": member_ai_payload(member),
+        "circadian_slots": [
+            {"slot_time": s["slot_time"], "purpose": s["purpose"], "rationale": s["rationale"]}
+            for s in slots
+        ],
         "available_gym_equipment": equipment_names(),
         "admin_customizations": customizations or [],
         "requirements": [
-            "Return only valid JSON with keys workout_plan, diet_plan, progress_message, safety_notes.",
-            "Workout plan should be 5-6 clear training days with sets/reps/intensity and trainer-friendly notes.",
-            "Workout exercises must be selected from the available gym equipment whenever possible.",
-            "Diet plan should match food preference, Indian/local meal patterns when appropriate, hydration, and premium add-ons if premium is true.",
-            "Respect medical and injury notes. Do not diagnose, treat disease, or override medical advice.",
-            "Use concise plain text strings. No Markdown tables.",
+            "Return only valid JSON matching the schema below.",
+            "Every item MUST include a non-empty 'rationale' of at least 40 characters "
+            "explaining why THIS item suits THIS member, referencing their goal, "
+            "experience, injuries, or schedule.",
+            "Place items at the supplied slot times. Do not invent times.",
+            "Exercises must come from available_gym_equipment.",
+            "Cite an evidence grade and source where a nutrition claim is made.",
+            "Do not diagnose, treat disease, or override medical advice.",
         ],
+        "response_schema": response_schema,
     }
 
 
-def validate_ai_plan_data(data):
-    workout_plan = data.get("workout_plan", "").strip()
-    diet_plan = data.get("diet_plan", "").strip()
-    safety_notes = data.get("safety_notes", "").strip()
-    progress_message = data.get("progress_message", "").strip()
-    if not workout_plan or not diet_plan:
-        return None
-    if safety_notes:
-        workout_plan = f"{workout_plan}\n\nSafety notes: {safety_notes}"
-        diet_plan = f"{diet_plan}\n\nSafety notes: {safety_notes}"
-    if progress_message:
-        workout_plan = f"{workout_plan}\n\nProgress message: {progress_message}"
-    return workout_plan, diet_plan
+def _validate_plan_items(plan_data, valid_slot_times, available_equipment):
+    """All-or-nothing validation for a single plan (workout or diet).
+
+    Returns (True, None) on success, (None, reason) on first failure.
+    """
+    if not isinstance(plan_data, dict):
+        return None, "Plan is not a JSON object"
+
+    days = plan_data.get("days")
+    if not days or not isinstance(days, list):
+        return None, "Missing or invalid days array"
+
+    for day_idx, day in enumerate(days):
+        if not isinstance(day, dict):
+            return None, f"Day {day_idx} is not an object"
+
+        items = day.get("items")
+        if not items or not isinstance(items, list):
+            return None, f"Day {day_idx} missing items array"
+
+        for item_idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                return None, f"Day {day_idx} item {item_idx} is not an object"
+
+            for field in ("slot_time", "item_type", "title", "detail", "rationale"):
+                if not item.get(field):
+                    return None, f"Day {day_idx} item {item_idx} missing {field}"
+
+            rationale = str(item.get("rationale", "")).strip()
+            if len(rationale) < 40:
+                return None, f"Day {day_idx} item {item_idx} rationale under 40 characters"
+
+            slot_time = item.get("slot_time")
+            if slot_time not in valid_slot_times:
+                return None, (
+                    f"Day {day_idx} item {item_idx} slot_time {slot_time} "
+                    f"not in supplied slots"
+                )
+
+            if item.get("item_type") == "exercise":
+                title = item.get("title", "")
+                if title not in available_equipment:
+                    return None, (
+                        f"Day {day_idx} item {item_idx} exercise '{title}' "
+                        f"not in available equipment"
+                    )
+
+    return True, None
+
+
+def validate_ai_plan_data(data, plan_type, valid_slot_times, available_equipment):
+    """All-or-nothing validator for AI plan JSON.
+
+    Returns ({"workout": ..., "diet": ...}, None) on success,
+    (None, rejection_reason) on any failure.
+    """
+    if not isinstance(data, dict):
+        return None, "Response is not a JSON object"
+
+    result = {}
+
+    if plan_type in ("both", "workout"):
+        workout = data.get("workout")
+        if not workout:
+            return None, "Missing workout plan"
+        ok, reason = _validate_plan_items(workout, valid_slot_times, available_equipment)
+        if not ok:
+            return None, f"Workout invalid: {reason}"
+        result["workout"] = workout
+
+    if plan_type in ("both", "diet"):
+        diet = data.get("diet")
+        if not diet:
+            return None, "Missing diet plan"
+        ok, reason = _validate_plan_items(diet, valid_slot_times, available_equipment)
+        if not ok:
+            return None, f"Diet invalid: {reason}"
+        result["diet"] = diet
+
+    return result, None
+
+
+def _ai_items_to_plan_items(plan_data):
+    """Convert AI response plan days into plan_items rows."""
+    items = []
+    for day in plan_data.get("days", []):
+        day_label = day.get("day_label", "Day 1")
+        for pos, item in enumerate(day.get("items", [])):
+            evidence = item.get("evidence") or {}
+            items.append(
+                {
+                    "day_label": day_label,
+                    "slot_time": item.get("slot_time"),
+                    "item_type": item.get("item_type"),
+                    "title": item.get("title"),
+                    "detail": item.get("detail"),
+                    "rationale": item.get("rationale", ""),
+                    "evidence_grade": evidence.get("grade"),
+                    "evidence_source": evidence.get("source"),
+                    "source_url": evidence.get("url"),
+                    "confidence": item.get("confidence", "High"),
+                    "position": pos,
+                }
+            )
+    return items
+
+
+def _build_ai_plan_text(member, plan_data, plan_type):
+    """Build human-readable text from validated AI structured data."""
+    lines = [f"STRENGTHLAB AI {plan_type.upper()} BLUEPRINT"]
+    lines.append(
+        f"Goal: {member_text(member, 'primary_fitness_goal') or member_text(member, 'goal', 'general fitness')}"
+    )
+    lines.append(f"Level: {member_text(member, 'fitness_level', 'Beginner')}")
+    lines.append("")
+
+    for day in plan_data.get("days", []):
+        lines.append(day.get("day_label", ""))
+        for item in day.get("items", []):
+            lines.append(f"- {item['title']}: {item['detail']}")
+            lines.append(f"  Rationale: {item['rationale']}")
+            if item.get("confidence"):
+                lines.append(f"  Confidence: {item['confidence']}")
+            if item.get("slot_time"):
+                lines.append(f"  Time: {item['slot_time']}")
+        lines.append("")
+
+    if plan_type == "diet":
+        lines.append("Safety: Nutrition guidance is educational and not medical treatment.")
+    else:
+        lines.append(
+            "Safety: Stop sharp pain, dizziness, chest pain, numbness, or worsening joint pain immediately."
+        )
+    return "\n".join(lines)
+
+
+def _persist_and_build_ai_text(member, parsed, model, plan_type):
+    """Persist validated AI output as structured plan items and return text."""
+    from services.clinical_recommendation_service import get_or_create_health_profile
+    from services.supplement_recommendation_service import plan_safety_gate
+
+    member_id = member["id"]
+    health_profile = get_or_create_health_profile(db(), member_id)
+    safety_warnings = plan_safety_gate(member, health_profile)
+    blocked_reason = "\n".join(safety_warnings) if safety_warnings else None
+    plan_status = "blocked" if safety_warnings else "draft"
+
+    workout_text, diet_text = "", ""
+
+    if "workout" in parsed:
+        items = _ai_items_to_plan_items(parsed["workout"])
+        _persist_structured_plan(
+            member_id, "workout", items, provenance="ai", model=model, status=plan_status, blocked_reason=blocked_reason
+        )
+        workout_text = _build_ai_plan_text(member, parsed["workout"], "workout")
+
+    if "diet" in parsed:
+        items = _ai_items_to_plan_items(parsed["diet"])
+        _persist_structured_plan(
+            member_id, "diet", items, provenance="ai", model=model, status=plan_status, blocked_reason=blocked_reason
+        )
+        diet_text = _build_ai_plan_text(member, parsed["diet"], "diet")
+
+    return workout_text, diet_text
+
+
+def _ai_fallback_to_rules(member, plan_type, refusal_reason):
+    """Fall back to rule-based generation after AI rejection and record why."""
+    member_id = member["id"]
+
+    before_workout = query_one(
+        "SELECT id FROM plan_versions WHERE member_id = ? AND plan_type = 'workout' ORDER BY id DESC LIMIT 1",
+        (member_id,),
+    )
+    before_diet = query_one(
+        "SELECT id FROM plan_versions WHERE member_id = ? AND plan_type = 'diet' ORDER BY id DESC LIMIT 1",
+        (member_id,),
+    )
+    before_workout_id = before_workout["id"] if before_workout else None
+    before_diet_id = before_diet["id"] if before_diet else None
+
+    workout_text, diet_text = generate_rule_based_plans(member)
+
+    note = f"AI output refused: {refusal_reason}"
+    for pt, before_id in (("workout", before_workout_id), ("diet", before_diet_id)):
+        version = query_one(
+            "SELECT id FROM plan_versions WHERE member_id = ? AND plan_type = ? ORDER BY id DESC LIMIT 1",
+            (member_id, pt),
+        )
+        if version and version["id"] != before_id:
+            execute(
+                "UPDATE plan_versions SET review_note = ? WHERE id = ?",
+                (note, version["id"]),
+            )
+
+    return workout_text, diet_text
 
 
 def generate_openai_plans(member, api_key, model, customizations=None, plan_type="both"):
@@ -2127,7 +2341,7 @@ def generate_openai_plans(member, api_key, model, customizations=None, plan_type
             {"role": "user", "content": json.dumps(ai_plan_prompt(member, customizations, plan_type))},
         ],
     )
-    return validate_ai_plan_data(parse_ai_json(response.output_text))
+    return parse_ai_json(response.output_text)
 
 
 def generate_gemini_plans(member, api_key, model, customizations=None, plan_type="both"):
@@ -2170,7 +2384,7 @@ def generate_gemini_plans(member, api_key, model, customizations=None, plan_type
         .get("parts", [{}])[0]
         .get("text", "")
     )
-    return validate_ai_plan_data(parse_ai_json(text))
+    return parse_ai_json(text)
 
 
 def generate_ai_plans(member, customizations=None, plan_type="both"):
@@ -2178,24 +2392,49 @@ def generate_ai_plans(member, customizations=None, plan_type="both"):
     if not providers:
         return None
 
+    from services import circadian_service
+
+    wake = member_text(member, "wake_time") or None
+    workout_time = member_text(member, "workout_time") or None
+    sleep = member_text(member, "sleep_time") or None
+    slots = circadian_service.build_day_slots(wake, workout_time, sleep)
+    valid_slot_times = {s["slot_time"] for s in slots}
+    available_equipment = set(equipment_names())
+
+    last_rejection_reason = None
+
     for provider in providers:
         for model in provider["models"]:
             for key_index, api_key in enumerate(provider["keys"], start=1):
                 try:
                     if provider["name"] == "openai":
-                        result = generate_openai_plans(member, api_key, model, customizations, plan_type)
+                        raw = generate_openai_plans(member, api_key, model, customizations, plan_type)
                     elif provider["name"] == "gemini":
-                        result = generate_gemini_plans(member, api_key, model, customizations, plan_type)
+                        raw = generate_gemini_plans(member, api_key, model, customizations, plan_type)
                     else:
-                        result = None
-                    if result:
+                        continue
+                    if raw is None:
+                        continue
+
+                    parsed, reason = validate_ai_plan_data(
+                        raw, plan_type, valid_slot_times, available_equipment
+                    )
+                    if parsed:
                         app.logger.info(
                             "AI plan generated with %s model %s key #%s",
                             provider["name"],
                             model,
                             key_index,
                         )
-                        return result
+                        return _persist_and_build_ai_text(member, parsed, model, plan_type)
+                    else:
+                        last_rejection_reason = reason
+                        app.logger.warning(
+                            "AI plan rejected from %s/%s: %s",
+                            provider["name"],
+                            model,
+                            reason,
+                        )
                 except Exception as error:
                     app.logger.warning(
                         "AI provider failed: %s model %s key #%s. Error: %s",
@@ -2204,6 +2443,14 @@ def generate_ai_plans(member, customizations=None, plan_type="both"):
                         key_index,
                         error,
                     )
+
+    if last_rejection_reason:
+        app.logger.warning(
+            "All AI providers rejected; falling back to rules. Last reason: %s",
+            last_rejection_reason,
+        )
+        return _ai_fallback_to_rules(member, plan_type, last_rejection_reason)
+
     app.logger.warning("All AI providers failed; using local fallback plan generator.")
     return None
 
@@ -2211,14 +2458,24 @@ def generate_ai_plans(member, customizations=None, plan_type="both"):
 def generate_plans(member, prefer_ai=True):
     workout_subscription = service_level(member, "workout_subscription", "Premium" if member["premium"] else "Regular")
     diet_subscription = service_level(member, "diet_subscription", "Premium" if member["premium"] else "Regular")
-    workout = generate_plan_draft(member, "workout") if prefer_ai else generate_rule_based_plans(member)[0]
-    diet = "No diet plan subscription is active for this member."
-    if diet_subscription != "None":
-        diet = generate_plan_draft(member, "diet") if prefer_ai else generate_rule_based_plans(member)[1]
+    no_diet_msg = "No diet plan subscription is active for this member."
+
+    # Non-premium members always get rule-based plans.
     if workout_subscription != "Premium" and diet_subscription != "Premium":
         local_workout, local_diet = generate_rule_based_plans(member)
-        return local_workout, local_diet if diet_subscription != "None" else diet
-    return workout, diet
+        return local_workout, local_diet if diet_subscription != "None" else no_diet_msg
+
+    # Premium with AI preference — try AI, fall back to rules.
+    if prefer_ai:
+        workout = generate_plan_draft(member, "workout")
+        diet = no_diet_msg
+        if diet_subscription != "None":
+            diet = generate_plan_draft(member, "diet")
+        return workout, diet
+
+    # Premium with AI explicitly disabled — use rules once.
+    local_workout, local_diet = generate_rule_based_plans(member)
+    return local_workout, local_diet if diet_subscription != "None" else no_diet_msg
 
 
 def dashboard_stats():
