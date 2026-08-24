@@ -1455,7 +1455,14 @@ def split_env_values(*names, default=None):
             if item:
                 values.append(item)
     if not values and default:
-        values = [default]
+        # The default goes through the same splitting as a real value. Returning
+        # it whole meant a default like "openai,gemini" arrived as one unsplit
+        # string, matched no provider, and silently disabled AI generation
+        # whenever AI_PROVIDER_ORDER was not set explicitly.
+        for item in str(default).replace("\n", ",").replace(";", ",").split(","):
+            item = item.strip()
+            if item:
+                values.append(item)
     return values
 
 
@@ -1671,10 +1678,18 @@ def recipe_cards(member, calories, protein, carbs, fat):
     ]
 
 
-def _persist_structured_plan(member_id, plan_type, items, provenance="rule", model=None, status="draft", blocked_reason=None):
-    """Insert a plan_version and its plan_items. Does not touch approved rows."""
+def _persist_structured_plan(member_id, plan_type, items, provenance="rule", model=None, status="draft", blocked_reason=None, conn=None):
+    """Insert a plan_version and its plan_items. Does not touch approved rows.
+
+    When ``conn`` is provided, statements are run against it so callers can
+    group workout and diet persistence into a single transaction.  When
+    ``conn`` is omitted a fresh transaction is used.
+    """
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with transaction() as conn:
+    own_txn = conn is None
+    if own_txn:
+        conn = db()
+    try:
         cursor = conn.execute(
             """
             INSERT INTO plan_versions (member_id, plan_type, status, provenance, model, generated_at, blocked_reason)
@@ -1707,7 +1722,13 @@ def _persist_structured_plan(member_id, plan_type, items, provenance="rule", mod
                     item.get("position", pos),
                 ),
             )
-    return version_id
+        if own_txn:
+            conn.commit()
+        return version_id
+    except Exception:
+        if own_txn:
+            conn.rollback()
+        raise
 
 
 def _build_workout_text(member, blueprint, available, items):
@@ -1967,9 +1988,10 @@ def generate_rule_based_plans(member):
                 "position": len(diet_items),
             })
 
-    # --- persist structured data ----------------------------------------------
-    _persist_structured_plan(member_id, "workout", workout_items, provenance="rule", status=plan_status, blocked_reason=blocked_reason)
-    _persist_structured_plan(member_id, "diet", diet_items, provenance="rule", status=plan_status, blocked_reason=blocked_reason)
+    # --- persist structured data (atomic for both plan types) -----------------
+    with transaction() as conn:
+        _persist_structured_plan(member_id, "workout", workout_items, provenance="rule", status=plan_status, blocked_reason=blocked_reason, conn=conn)
+        _persist_structured_plan(member_id, "diet", diet_items, provenance="rule", status=plan_status, blocked_reason=blocked_reason, conn=conn)
 
     # --- legacy text for backward compatibility -------------------------------
     workout_text = _build_workout_text(member, blueprint, available, workout_items)
@@ -2274,19 +2296,20 @@ def _persist_and_build_ai_text(member, parsed, model, plan_type):
 
     workout_text, diet_text = "", ""
 
-    if "workout" in parsed:
-        items = _ai_items_to_plan_items(parsed["workout"])
-        _persist_structured_plan(
-            member_id, "workout", items, provenance="ai", model=model, status=plan_status, blocked_reason=blocked_reason
-        )
-        workout_text = _build_ai_plan_text(member, parsed["workout"], "workout")
+    with transaction() as conn:
+        if "workout" in parsed:
+            items = _ai_items_to_plan_items(parsed["workout"])
+            _persist_structured_plan(
+                member_id, "workout", items, provenance="ai", model=model, status=plan_status, blocked_reason=blocked_reason, conn=conn
+            )
+            workout_text = _build_ai_plan_text(member, parsed["workout"], "workout")
 
-    if "diet" in parsed:
-        items = _ai_items_to_plan_items(parsed["diet"])
-        _persist_structured_plan(
-            member_id, "diet", items, provenance="ai", model=model, status=plan_status, blocked_reason=blocked_reason
-        )
-        diet_text = _build_ai_plan_text(member, parsed["diet"], "diet")
+        if "diet" in parsed:
+            items = _ai_items_to_plan_items(parsed["diet"])
+            _persist_structured_plan(
+                member_id, "diet", items, provenance="ai", model=model, status=plan_status, blocked_reason=blocked_reason, conn=conn
+            )
+            diet_text = _build_ai_plan_text(member, parsed["diet"], "diet")
 
     return workout_text, diet_text
 
@@ -3005,6 +3028,32 @@ def _approved_workout_items(member_id, focus):
     if not matched_items:
         return []
     return [f"{item['title']}: {item['detail']}" for item in matched_items]
+
+
+def _approved_diet_items(member_id):
+    """Return meal/hydration/supplement items from the latest approved diet plan version.
+
+    Returns ``None`` when no approved diet version exists so callers can show an
+    honest empty state.
+    """
+    version = query_one(
+        """
+        SELECT * FROM plan_versions
+        WHERE member_id = ? AND plan_type = 'diet' AND status = 'approved'
+        ORDER BY generated_at DESC, id DESC LIMIT 1
+        """,
+        (member_id,),
+    )
+    if not version:
+        return None
+    return query_all(
+        """
+        SELECT * FROM plan_items
+        WHERE plan_version_id = ? AND item_type IN ('meal', 'hydration', 'supplement')
+        ORDER BY slot_time ASC, position ASC
+        """,
+        (version["id"],),
+    )
 
 
 def personalized_today_plan(member):
@@ -3927,11 +3976,7 @@ def add_member():
     )
     db().commit()
     member = query_one("SELECT * FROM members WHERE id = ?", (cursor.lastrowid,))
-    workout_plan, diet_plan = generate_plans(member, prefer_ai=True)
-    execute(
-        "UPDATE members SET workout_plan = ?, diet_plan = ? WHERE id = ?",
-        (workout_plan, diet_plan, member["id"]),
-    )
+    generate_plans(member, prefer_ai=True)
     log_notification(
         member["id"],
         f"Welcome {member['name']}! Your gym profile is ready. Your workout and diet plan has been generated.",
@@ -4594,11 +4639,7 @@ def edit_member(member_id):
         )
         member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
         if request.form.get("regenerate_plans"):
-            workout_plan, diet_plan = generate_plans(member, prefer_ai=True)
-            execute(
-                "UPDATE members SET workout_plan = ?, diet_plan = ? WHERE id = ?",
-                (workout_plan, diet_plan, member_id),
-            )
+            generate_plans(member, prefer_ai=True)
         login_id_input = request.form.get("login_id", "").strip()
         login_error = None
         if login_id_input and (not member_login or login_id_input != member_login["username"]):
@@ -4644,11 +4685,7 @@ def regenerate(member_id):
     member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
     if not can_view_member(current_user(), member):
         return redirect(url_for("index"))
-    workout_plan, diet_plan = generate_plans(member, prefer_ai=True)
-    execute(
-        "UPDATE members SET workout_plan = ?, diet_plan = ? WHERE id = ?",
-        (workout_plan, diet_plan, member_id),
-    )
+    generate_plans(member, prefer_ai=True)
     log_notification(member_id, f"Hi {member['name']}, your updated workout and diet plan is ready.", "diet-plan.pdf")
     return redirect(url_for("member_detail", member_id=member_id))
 
