@@ -3574,6 +3574,83 @@ def set_manual_login_id(role, login_id, phone, member_id=None, trainer_id=None):
     return login_id, None
 
 
+def login_belongs_to_someone_else(user_row, role, member_id, trainer_id):
+    """True when this username is already a live login for a different person."""
+    if user_row["role"] not in {"member", "trainer"}:
+        return True  # never repurpose a staff account
+    if role == "member":
+        owner_id = user_row["member_id"]
+        if not owner_id or owner_id == member_id:
+            return False
+        return query_one("SELECT id FROM members WHERE id = ?", (owner_id,)) is not None
+    if role == "trainer":
+        owner_id = user_row["trainer_id"]
+        if not owner_id or owner_id == trainer_id:
+            return False
+        return query_one("SELECT id FROM trainers WHERE id = ?", (owner_id,)) is not None
+    return False
+
+
+def login_conflict(role, phone, member_id=None, trainer_id=None):
+    """Who already owns the login this phone number would produce, if anyone.
+
+    Returns a dict describing the clash so staff can be told why no login was
+    created, or None when the number is free to use.
+    """
+    username = mobile_login_id(phone)
+    if not username:
+        return None
+    owner = query_one("SELECT * FROM users WHERE username = ?", (username,))
+    if not owner or not login_belongs_to_someone_else(owner, role, member_id, trainer_id):
+        return None
+    holder = None
+    if owner["role"] == "member" and owner["member_id"]:
+        holder = query_one("SELECT name FROM members WHERE id = ?", (owner["member_id"],))
+    elif owner["role"] == "trainer" and owner["trainer_id"]:
+        holder = query_one("SELECT name FROM trainers WHERE id = ?", (owner["trainer_id"],))
+    return {
+        "login_id": username,
+        "holder_name": holder["name"] if holder else None,
+        "holder_role": owner["role"],
+    }
+
+
+def set_manual_login_id(role, login_id, phone, member_id=None, trainer_id=None):
+    """Give this member/trainer an explicit login ID instead of the phone-derived one.
+
+    Returns (username, error). The username is pinned with username_locked so a
+    later phone sync does not rename it back into a collision.
+    """
+    login_id = (login_id or "").strip()
+    if not login_id:
+        return None, "Login ID cannot be empty."
+    if len(login_id) < 4:
+        return None, "Login ID must be at least 4 characters."
+    existing = query_one(
+        "SELECT id FROM users WHERE role = ? AND (member_id = ? OR trainer_id = ?)",
+        (role, member_id, trainer_id),
+    )
+    clash = query_one("SELECT id FROM users WHERE username = ?", (login_id,))
+    if clash and (not existing or clash["id"] != existing["id"]):
+        return None, f"Login ID '{login_id}' is already taken."
+    if existing:
+        execute(
+            "UPDATE users SET username = ?, username_locked = 1, active = 1 WHERE id = ?",
+            (login_id, existing["id"]),
+        )
+        return login_id, None
+    password = generate_temp_password()
+    execute(
+        """
+        INSERT INTO users (username, password_hash, role, member_id, trainer_id, must_change_password, username_locked)
+        VALUES (?, ?, ?, ?, ?, 1, 1)
+        """,
+        (login_id, generate_password_hash(password), role, member_id, trainer_id),
+    )
+    remember_issued_credential(login_id, password)
+    return login_id, None
+
+
 def create_or_update_mobile_user(role, phone, member_id=None, trainer_id=None, reset_password=False):
     username = mobile_login_id(phone)
     if not username:

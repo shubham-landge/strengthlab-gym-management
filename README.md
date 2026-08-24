@@ -68,6 +68,11 @@ request, plus a check that the app boots and serves a page.
 There is no `trainer/trainer123` or `member/member123` login: seeded trainer and
 member accounts are converted to mobile-number login IDs on first run.
 
+On a freshly seeded database the sample accounts are `9999111222` / `1222` (member)
+and `9999000111` / `0111` (trainer). There is no `trainer/trainer123` or
+`member/member123` login: seeded trainer and member accounts are converted to
+mobile-number login IDs on first run.
+
 Admins can manage the full system. Trainers can view their assigned members and attendance. Members are redirected to their own dashboard.
 
 Default mobile passwords must be changed on first login. Admin password resets also force the user to choose a new password on next login. A local forgot-password reset link flow is available from the login page.
