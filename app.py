@@ -12,11 +12,13 @@ import time
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from flask import Flask, abort, flash, g, has_request_context, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, flash, g, has_app_context, has_request_context, redirect, render_template, request, send_file, session, url_for
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from openpyxl import Workbook
 from werkzeug.security import check_password_hash, generate_password_hash
+
+from services.secret_store import decrypt_secret, encrypt_secret, mask_secret
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -900,6 +902,22 @@ def init_db():
             FOREIGN KEY(member_id) REFERENCES members(id)
         );
 
+        CREATE TABLE IF NOT EXISTS ai_credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL,
+            label TEXT,
+            encrypted_key TEXT NOT NULL,
+            key_hint TEXT,
+            models TEXT,
+            active INTEGER DEFAULT 1,
+            created_by INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_tested_at TEXT,
+            last_test_ok INTEGER,
+            last_test_detail TEXT,
+            FOREIGN KEY(created_by) REFERENCES users(id)
+        );
+
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
@@ -1494,6 +1512,40 @@ def split_env_values(*names, default=None):
     return values
 
 
+def stored_ai_credentials(include_inactive=False):
+    """Credentials entered through the UI, newest first."""
+    where = "" if include_inactive else "WHERE active = 1"
+    if not has_app_context():
+        # Provider discovery also runs at import time and from scripts.
+        return []
+    try:
+        return query_all(f"SELECT * FROM ai_credentials {where} ORDER BY id DESC")
+    except sqlite3.OperationalError:
+        # Table not migrated yet (older database, first boot).
+        return []
+
+
+def decrypted_keys_for(provider):
+    """Plaintext keys for one provider, skipping any that cannot be decrypted."""
+    keys, models = [], []
+    for row in stored_ai_credentials():
+        if row["provider"] != provider:
+            continue
+        plaintext = decrypt_secret(row["encrypted_key"], app.config["SECRET_KEY"])
+        if not plaintext:
+            app.logger.warning(
+                "Stored %s credential #%s could not be decrypted; SECRET_KEY may have changed.",
+                provider, row["id"],
+            )
+            continue
+        keys.append(plaintext)
+        for model in (row["models"] or "").replace(";", ",").split(","):
+            model = model.strip()
+            if model and model not in models:
+                models.append(model)
+    return keys, models
+
+
 def configured_ai_providers():
     preferred = split_env_values("AI_PROVIDER_ORDER", default="openai,gemini")
     providers = []
@@ -1507,6 +1559,12 @@ def configured_ai_providers():
             models = split_env_values("GEMINI_MODELS", "GEMINI_MODEL", default=DEFAULT_GEMINI_MODEL)
         else:
             continue
+        # Keys entered in the UI are tried after any set in the environment, so a
+        # deployment's own configuration always takes precedence.
+        stored_keys, stored_models = decrypted_keys_for(provider_key)
+        keys = keys + [k for k in stored_keys if k not in keys]
+        if stored_models:
+            models = stored_models + [m for m in models if m not in stored_models]
         if keys:
             providers.append({"name": provider_key, "keys": keys, "models": models})
     return providers
@@ -6237,6 +6295,121 @@ def plan_review_view(member_id):
         member=member,
         plans=plans,
         approved={row["plan_type"]: row for row in approved},
+    )
+
+
+def test_ai_credential(provider, api_key, model):
+    """Make one real call. Returns (ok, human-readable detail)."""
+    probe = {"role": "probe", "name": "probe", "age": 30, "gender": "Male",
+             "height_cm": 175, "weight_kg": 75, "goal": "general fitness",
+             "premium": 1, "workout_subscription": "Premium", "diet_subscription": "None"}
+    try:
+        if provider == "openai":
+            from openai import OpenAI
+            OpenAI(api_key=api_key).models.list()
+            return True, f"Key accepted by OpenAI."
+        if provider == "gemini":
+            endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            payload = json.dumps({"contents": [{"parts": [{"text": "reply with ok"}]}]}).encode("utf-8")
+            probe_request = Request(
+                endpoint, data=payload, method="POST",
+                headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+            )
+            with urlopen(probe_request, timeout=45) as response:
+                response.read()
+            return True, f"Key accepted by Gemini using {model}."
+    except Exception as error:
+        detail = str(error)
+        if "429" in detail:
+            return False, "Rate limited (429). The key is valid but its quota is used up for now."
+        if "503" in detail:
+            return False, "Provider overloaded (503). Transient - try again shortly."
+        if "401" in detail or "403" in detail or "API_KEY_INVALID" in detail:
+            return False, "Rejected (not authorised). Check the key was copied in full."
+        if "404" in detail:
+            return False, f"Model '{model}' not found for this key. Try a different model."
+        if "timed out" in detail.lower():
+            return False, "The provider did not answer in time. Usually load at their end - try again."
+        return False, f"Call failed: {detail[:160]}"
+    return False, "Unknown provider."
+
+
+@app.route("/settings/ai", methods=["GET", "POST"])
+@role_required("admin", "owner")
+def ai_settings():
+    if request.method == "POST":
+        action = request.form.get("action")
+        credential_id = request.form.get("credential_id")
+
+        if action == "add":
+            provider = request.form.get("provider", "").strip().lower()
+            api_key = request.form.get("api_key", "").strip()
+            models = request.form.get("models", "").strip()
+            label = request.form.get("label", "").strip()
+            if provider not in {"openai", "gemini"}:
+                flash("Choose a provider.", "bad")
+            elif len(api_key) < 12:
+                flash("That does not look like an API key. Paste the whole value.", "bad")
+            else:
+                default_model = OPENAI_MODEL if provider == "openai" else DEFAULT_GEMINI_MODEL
+                execute(
+                    """
+                    INSERT INTO ai_credentials
+                    (provider, label, encrypted_key, key_hint, models, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        provider,
+                        label or f"{provider.title()} key",
+                        encrypt_secret(api_key, app.config["SECRET_KEY"]),
+                        mask_secret(api_key),
+                        models or default_model,
+                        current_user()["id"],
+                    ),
+                )
+                flash(f"{provider.title()} key saved. Test it below to confirm it works.", "good")
+
+        elif action == "toggle" and credential_id:
+            row = query_one("SELECT * FROM ai_credentials WHERE id = ?", (credential_id,))
+            if row:
+                execute("UPDATE ai_credentials SET active = ? WHERE id = ?",
+                        (0 if row["active"] else 1, credential_id))
+
+        elif action == "delete" and credential_id:
+            execute("DELETE FROM ai_credentials WHERE id = ?", (credential_id,))
+            flash("Key deleted.", "good")
+
+        elif action == "test" and credential_id:
+            row = query_one("SELECT * FROM ai_credentials WHERE id = ?", (credential_id,))
+            if row:
+                plaintext = decrypt_secret(row["encrypted_key"], app.config["SECRET_KEY"])
+                if not plaintext:
+                    ok, detail = False, "Stored key cannot be read. SECRET_KEY may have changed - re-enter it."
+                else:
+                    model = (row["models"] or "").split(",")[0].strip() or (
+                        OPENAI_MODEL if row["provider"] == "openai" else DEFAULT_GEMINI_MODEL)
+                    ok, detail = test_ai_credential(row["provider"], plaintext, model)
+                execute(
+                    "UPDATE ai_credentials SET last_tested_at = ?, last_test_ok = ?, last_test_detail = ? WHERE id = ?",
+                    (datetime.now().isoformat(timespec="seconds"), 1 if ok else 0, detail, credential_id),
+                )
+                flash(detail, "good" if ok else "bad")
+
+        return redirect(url_for("ai_settings"))
+
+    credentials = stored_ai_credentials(include_inactive=True)
+    env_providers = []
+    for name, names in (("openai", ("OPENAI_API_KEYS", "OPENAI_API_KEY")),
+                        ("gemini", ("GEMINI_API_KEYS", "GEMINI_API_KEY", "GOOGLE_API_KEY"))):
+        if split_env_values(*names):
+            env_providers.append(name)
+
+    return render_template(
+        "ai_settings.html",
+        credentials=credentials,
+        env_providers=env_providers,
+        ai_enabled=ai_generation_enabled(),
+        ai_label=ai_generation_label(),
     )
 
 

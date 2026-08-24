@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">Settings</p>
+    <h1>AI providers</h1>
+  </div>
+  <div class="actions">
+    <a class="button" href="{{ url_for('index') }}">Back to dashboard</a>
+  </div>
+</header>
+
+<section class="panel">
+  <div class="section-title">
+    <h2>Status</h2>
+    <small>What plan generation will use right now.</small>
+  </div>
+  <div class="notice {{ 'good' if ai_enabled else 'warn' }}">
+    {% if ai_enabled %}
+    AI generation is <strong>on</strong> — {{ ai_label }}. Plans still arrive as drafts for your approval.
+    {% else %}
+    AI generation is <strong>off</strong>. Plans are built by the local rule engine, which needs no key
+    and works offline. Add a key below to enable AI drafting.
+    {% endif %}
+  </div>
+  {% if env_providers %}
+  <p class="empty-hint" style="margin:0;">
+    Keys are also set in the environment for: <strong>{{ env_providers|join(', ') }}</strong>.
+    Those are tried first — a key added here is used after them.
+  </p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="section-title">
+    <h2>Add a key</h2>
+    <small>Stored encrypted. It is never shown again after you save it.</small>
+  </div>
+  <form class="grid-form" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="add">
+    <label>Provider
+      <select name="provider" required>
+        <option value="">Choose…</option>
+        <option value="gemini">Google Gemini</option>
+        <option value="openai">OpenAI</option>
+      </select>
+    </label>
+    <label>Label <input name="label" placeholder="e.g. Gym Gemini key" autocomplete="off"></label>
+    <label>Models <input name="models" placeholder="gemini-flash-latest, gemini-2.5-flash" autocomplete="off"></label>
+    <label class="span-3">API key
+      <input name="api_key" type="password" required autocomplete="off"
+             placeholder="Paste the whole key — it is not shown again after saving">
+    </label>
+    <button class="button primary" type="submit">Save key</button>
+  </form>
+  <p class="empty-hint" style="margin-top:10px;">
+    Gemini keys come from <strong>aistudio.google.com/apikey</strong> (free tier available).
+    OpenAI keys from <strong>platform.openai.com/api-keys</strong>.
+    List several models if you like — they are tried in order, which helps when one is busy.
+  </p>
+</section>
+
+<section class="panel">
+  <div class="section-title">
+    <h2>Saved keys</h2>
+    <small>Test a key to confirm the provider accepts it.</small>
+  </div>
+
+  {% if credentials %}
+  <div class="scroll-x">
+    <table>
+      <thead>
+        <tr><th>Provider</th><th>Key</th><th>Models</th><th>State</th><th>Last test</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for row in credentials %}
+        <tr>
+          <td>
+            <strong>{{ row.provider|title }}</strong>
+            {% if row.label %}<br><small class="empty-hint">{{ row.label }}</small>{% endif %}
+          </td>
+          <td><code>{{ row.key_hint or '••••' }}</code></td>
+          <td><small>{{ row.models or '—' }}</small></td>
+          <td>
+            <span class="pill {{ 'good' if row.active else '' }}">{{ 'Active' if row.active else 'Paused' }}</span>
+          </td>
+          <td>
+            {% if row.last_tested_at %}
+            <span class="pill {{ 'good' if row.last_test_ok else 'bad' }}">{{ 'Working' if row.last_test_ok else 'Failed' }}</span>
+            <br><small class="empty-hint">{{ row.last_test_detail }}</small>
+            {% else %}
+            <small class="empty-hint">Not tested yet</small>
+            {% endif %}
+          </td>
+          <td>
+            <div class="row-actions">
+              <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="action" value="test">
+                <input type="hidden" name="credential_id" value="{{ row.id }}">
+                <button class="button" type="submit">Test</button>
+              </form>
+              <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="action" value="toggle">
+                <input type="hidden" name="credential_id" value="{{ row.id }}">
+                <button class="button" type="submit">{{ 'Pause' if row.active else 'Resume' }}</button>
+              </form>
+              <form method="post" onsubmit="return confirm('Delete this key? Plan generation falls back to the rule engine if no other key is active.');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="action" value="delete">
+                <input type="hidden" name="credential_id" value="{{ row.id }}">
+                <button class="button" type="submit">Delete</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <p>No keys saved yet.</p>
+    <p class="empty-hint">The gym runs fine without one — plans are generated by the built-in rule
+    engine, which works offline and explains every item just the same.</p>
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="section-title"><h2>How your key is stored</h2></div>
+  <p class="empty-hint">
+    Keys are encrypted before they are written to the database, using a secret derived from this
+    app's <code>SECRET_KEY</code>. That protects a copied database file or a backup. It does
+    <strong>not</strong> protect a key from someone who already has access to this server, since
+    the secret lives there too — so keep the machine itself secure.
+  </p>
+  <p class="empty-hint">
+    Only admins and owners can open this page. Saved keys are never displayed again, only the
+    first and last four characters. If <code>SECRET_KEY</code> ever changes, saved keys can no
+    longer be read and must be entered again.
+  </p>
+</section>
+{% endblock %}
