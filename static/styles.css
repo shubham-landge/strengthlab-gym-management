@@ -1137,11 +1137,11 @@ pre {
   body { grid-template-columns: 1fr; }
   .sidebar { display: none; }
   .mobile-bottom-nav { display: grid; }
-  .main { padding: 18px 16px 88px; }
+  .main { padding: 18px 16px 180px; }
   .page-header, .two-col { grid-template-columns: 1fr; display: grid; }
   .stats-grid, .bento-grid, .grid-form, .grid-form.compact, .member-filters, .payment-filters, .renewal-form, .service-grid, .member-hero, .today-grid, .athlete-grid, .macro-grid, .finance-visuals, .mini-grid { grid-template-columns: 1fr; }
   .bento-span-3, .bento-span-5, .bento-span-6, .bento-span-7 { grid-column: span 1; }
-  .payment-drawer { width: 100%; padding: 20px 16px 88px; }
+  .payment-drawer { width: 100%; padding: 20px 16px 180px; }
   .drawer-two { grid-template-columns: 1fr; }
   .table-wrap { overflow: visible; background: transparent; border: 0; box-shadow: none; }
   .table-wrap table, .table-wrap thead, .table-wrap tbody, .table-wrap tr, .table-wrap td { display: block; width: 100%; }
@@ -1329,3 +1329,11 @@ pre {
   gap: 12px;
 }
 
+
+.empty-state .empty-hint {
+  color: var(--muted);
+  font-size: 13px;
+  max-width: 52ch;
+  margin: 6px auto 16px;
+  line-height: 1.55;
+}

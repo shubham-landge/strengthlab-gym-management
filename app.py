@@ -5987,81 +5987,52 @@ def member_plan_view(member_id):
     )
 
 
-@app.route("/members/<int:member_id>/plan/review", methods=["GET", "POST"])
+@app.route("/members/<int:member_id>/plan/review")
 @role_required("admin", "trainer")
 def plan_review_view(member_id):
-    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    """Read-only review screen. Approve/reject/edit post to the plan-version routes."""
+    member = row_or_none("members", member_id)
     if not member:
-        return redirect(url_for("index"))
+        abort(404)
 
-    plan = None
+    # Latest version awaiting a decision, per plan type. No fabricated preview:
+    # if nothing has been generated the screen says so and offers to generate.
+    pending_versions = query_all(
+        """
+        SELECT * FROM plan_versions
+        WHERE member_id = ? AND status IN ('draft', 'pending_review', 'blocked')
+        ORDER BY plan_type, id DESC
+        """,
+        (member_id,),
+    )
+    seen_types = set()
+    versions = []
+    for version in pending_versions:
+        if version["plan_type"] in seen_types:
+            continue
+        seen_types.add(version["plan_type"])
+        versions.append(version)
+
+    plan = versions[0] if versions else None
     plan_items = []
-    try:
-        plan = query_one(
-            "SELECT * FROM plan_versions WHERE member_id = ? AND status IN ('draft', 'pending_review', 'blocked') ORDER BY id DESC LIMIT 1",
-            (member_id,)
-        )
-    except Exception:
-        plan = None
-
     if plan:
-        try:
-            plan_items = query_all(
-                "SELECT * FROM plan_items WHERE plan_version_id = ? ORDER BY position ASC, slot_time ASC",
-                (plan["id"],)
-            )
-        except Exception:
-            plan_items = []
+        plan_items = query_all(
+            "SELECT * FROM plan_items WHERE plan_version_id = ? ORDER BY position ASC, slot_time ASC",
+            (plan["id"],),
+        )
 
-    # Fallback to circadian day slots preview if no database plan_versions exist yet
-    if not plan_items:
-        if not plan:
-            plan = {"status": "draft", "provenance": "rule", "blocked_reason": None}
-        from services.circadian_service import build_day_slots
-        wake = member["wake_time"] if "wake_time" in member.keys() else None
-        workout = member["workout_time"] if "workout_time" in member.keys() else None
-        sleep = member["sleep_time"] if "sleep_time" in member.keys() else None
-        slots = build_day_slots(wake, workout, sleep)
-        for idx, s in enumerate(slots):
-            plan_items.append({
-                "id": idx + 1,
-                "day_label": "Every day · Circadian Schedule",
-                "slot_time": s["slot_time"],
-                "item_type": s["item_type"],
-                "title": s["title"],
-                "detail": s["purpose"],
-                "rationale": s["rationale"],
-                "evidence_grade": "B",
-                "evidence_source": "NIH Circadian & Metabolic Guidelines",
-                "source_url": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6489950/",
-                "confidence": s["confidence"],
-                "provenance": "rule",
-                "position": idx + 1
-            })
-
-    # Hard Gate enforcement on POST approve attempt: return 403 HTTP response if plan is blocked
-    if request.method == "POST":
-        action = request.form.get("action")
-        if action in ["approve_all", "approve_day"]:
-            if plan and plan.get("blocked_reason"):
-                return ("Plan is blocked due to clinical contraindication", 403)
-
-    # Group items by day_label
     items_by_day = {}
     for item in plan_items:
-        day = item.get("day_label") or "Every day"
-        if day not in items_by_day:
-            items_by_day[day] = []
-        items_by_day[day].append(item)
+        items_by_day.setdefault(item["day_label"] or "Every day", []).append(item)
 
     return render_template(
         "plan_review.html",
         member=member,
         plan=plan,
+        versions=versions,
         plan_items=plan_items,
-        items_by_day=items_by_day
+        items_by_day=items_by_day,
     )
-
 
 
 @app.route("/members/<int:member_id>/recommendations.pdf")

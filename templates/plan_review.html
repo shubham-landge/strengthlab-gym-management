@@ -56,7 +56,7 @@
     <small style="color: var(--muted);">Review items below before publishing to member portal.</small>
   </div>
   <div>
-    <form method="post" action="{{ url_for('approve_plan_route', plan_id=plan.id) if false else '#' }}" style="display:inline;">
+    <form method="post" action="{{ url_for('approve_plan_version', member_id=member.id, version_id=plan.id) }}" style="display:inline;">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="action" value="approve_all">
       <button class="button primary" type="submit">Approve & Publish Plan</button>
@@ -78,14 +78,7 @@
     <div style="border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; background: var(--panel-2);">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; border-bottom: 1px solid var(--line); padding-bottom: 10px;">
         <h3 style="margin: 0; font-size: 1.1rem; color: var(--ink);">{{ day_label }}</h3>
-        {% if not plan.blocked_reason and plan.status in ['draft', 'pending_review'] %}
-        <form method="post" action="#" style="margin: 0;">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <input type="hidden" name="action" value="approve_day">
-          <input type="hidden" name="day_label" value="{{ day_label }}">
-          <button class="button" style="padding: 4px 10px; font-size: 0.78rem;" type="submit">Approve Day</button>
-        </form>
-        {% endif %}
+        
       </div>
 
       <div style="display: flex; flex-direction: column; gap: 12px;">
@@ -147,7 +140,7 @@
           <div id="edit-plan-item-{{ item.id }}" class="modal-overlay">
             <div class="modal-content panel" style="max-width: 550px;">
               <h3>Edit Plan Item ( provenance → admin )</h3>
-              <form class="grid-form" method="post" action="#">
+              <form class="grid-form" method="post" action="{{ url_for('edit_plan_item', member_id=member.id, version_id=plan.id, item_id=item.id) }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="action" value="edit_item">
                 <input type="hidden" name="item_id" value="{{ item.id }}">
@@ -184,8 +177,14 @@
   </div>
   {% else %}
   <div class="empty-state">
-    <div style="font-size: 2rem;">📋</div>
-    <p>No plan generated for this member yet.</p>
+    <p>No plan has been generated for this member yet.</p>
+    <p class="empty-hint">Generating builds a plan from the member's goal, health profile, and
+    their wake, training and sleep times, then runs it through the clinical safety check.
+    Nothing reaches the member until you approve it.</p>
+    <form method="post" action="{{ url_for('regenerate', member_id=member.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="button primary" type="submit">Generate plan</button>
+    </form>
   </div>
   {% endif %}
 </section>

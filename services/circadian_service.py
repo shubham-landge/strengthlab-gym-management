@@ -1,12 +1,24 @@
-"""
-Circadian timing service for StrengthLab.
+"""Circadian scheduling for plans.
 
-Pure functional module for building daily timeline slots based on member circadian anchors:
-wake_time, workout_time, and sleep_time.
-
-No database dependencies.
+`purpose` is a CONTROLLED VOCABULARY - other modules match on these exact
+strings, so they are an API, not display copy. Human-facing wording belongs in
+`title`. Allowed values are listed in PURPOSES below; adding one is a spec change.
 """
+
 from typing import Dict, List, Optional, Any
+
+PURPOSES = (
+    "Wake",
+    "First meal",
+    "Pre-workout meal",
+    "Pre-workout light carb",
+    "Training",
+    "Post-workout meal",
+    "Last meal",
+    "Caffeine cut-off",
+    "Wind-down",
+    "Sleep",
+)
 
 
 def parse_time(time_str: Optional[str]) -> Optional[int]:
@@ -84,7 +96,7 @@ def build_day_slots(
 
     confidence = "Low" if missing_anchors else "High"
     fallback_note = (
-        " (Missing anchor: defaulted to fallback times 07:00 wake / 18:00 workout / 23:00 sleep. Collect exact times from member.)"
+        " Fallback times used (07:00 wake / 18:00 workout / 23:00 sleep) because an anchor was missing. Collect the real times from the member."
         if missing_anchors
         else ""
     )
@@ -128,7 +140,7 @@ def build_day_slots(
         "minutes": wake_mins,
         "item_type": "recovery",
         "title": "Wake Anchor & Hydration",
-        "purpose": "Circadian alignment",
+        "purpose": "Wake",
         "rationale": wake_rationale,
         "confidence": confidence,
     })
@@ -141,7 +153,7 @@ def build_day_slots(
             "minutes": first_meal_mins,
             "item_type": "meal",
             "title": "Pre-Workout Light Carb Snack",
-            "purpose": "Fasted session energy boost",
+            "purpose": "Pre-workout light carb",
             "rationale": (
                 f"Workout at {actual_workout} is within 60 min of waking at {actual_wake}. "
                 "Full breakfast is deferred until post-workout; take a light, easy-to-digest carb only."
@@ -155,7 +167,7 @@ def build_day_slots(
             "minutes": first_meal_mins,
             "item_type": "meal",
             "title": "Breakfast · 35g Protein",
-            "purpose": "First protein feeding",
+            "purpose": "First meal",
             "rationale": (
                 f"Placed at {format_time(first_meal_mins)} (within 30–60 min of waking at {actual_wake}). "
                 "Front-loading protein supports daily targets across distributed feedings."
@@ -171,7 +183,7 @@ def build_day_slots(
             "minutes": pre_workout_mins,
             "item_type": "meal",
             "title": "Pre-Workout Meal · Carb-Led",
-            "purpose": "Session fueling",
+            "purpose": "Pre-workout meal",
             "rationale": (
                 f"Placed at {format_time(pre_workout_mins)} (90 minutes before your {actual_workout} workout). "
                 "Provides accessible glycogen while allowing stomach emptying before training."
@@ -195,7 +207,7 @@ def build_day_slots(
         "minutes": caffeine_cutoff_mins,
         "item_type": "hydration",
         "title": "Caffeine & Stimulant Cut-Off",
-        "purpose": "Sleep protection",
+        "purpose": "Caffeine cut-off",
         "rationale": caffeine_rationale + fallback_note,
         "confidence": confidence,
     })
@@ -208,6 +220,12 @@ def build_day_slots(
         workout_title = "Early Training Session (Extended Warm-Up)"
 
     workout_rationale = f"Anchor workout slot at {actual_workout}."
+    if is_short_sleep:
+        # Surfaced here as well as on the wake slot: this is where it changes what the member does.
+        workout_rationale += (
+            f" Sleep window is {hours_str} hours, below 7-hour floor, "
+            "so weekly training volume is reduced by ~20% until sleep improves."
+        )
     if is_early_training:
         workout_rationale += (
             f" Scheduled less than 2 hours after waking at {actual_wake}. "
@@ -224,10 +242,26 @@ def build_day_slots(
         "minutes": workout_mins,
         "item_type": "exercise",
         "title": workout_title,
-        "purpose": "Primary stimulus",
+        "purpose": "Training",
         "rationale": workout_rationale + fallback_note,
         "confidence": confidence,
     })
+
+    if is_late_training:
+        wind_down_mins = min(workout_mins + 105, sleep_mins - 15)
+        raw_slots.append({
+            "slot_time": format_time(wind_down_mins),
+            "minutes": wind_down_mins,
+            "item_type": "recovery",
+            "title": "Wind-Down Protocol",
+            "purpose": "Wind-down",
+            "rationale": (
+                f"Training ends close to your {actual_sleep} bedtime, so a "
+                f"{format_time(wind_down_mins)} wind-down (dim light, no screens, slow nasal breathing) "
+                "is needed to bring arousal down before sleep."
+            ) + fallback_note,
+            "confidence": confidence,
+        })
 
     # 6. Post-Workout Feeding Slot
     post_workout_mins = workout_mins + 75
@@ -249,7 +283,7 @@ def build_day_slots(
         "minutes": post_workout_mins,
         "item_type": "meal",
         "title": post_title,
-        "purpose": "Recovery & protein synthesis",
+        "purpose": "Post-workout meal",
         "rationale": post_rationale + fallback_note,
         "confidence": confidence,
     })
@@ -261,7 +295,7 @@ def build_day_slots(
         "minutes": last_meal_mins,
         "item_type": "meal",
         "title": "Last Meal / Evening Feeding",
-        "purpose": "Overnight protein retention",
+        "purpose": "Last meal",
         "rationale": (
             f"Placed at {format_time(last_meal_mins)} (at least 2 hours clear of your {actual_sleep} bedtime). "
             "Eating closer to sleep impairs nocturnal HRV and delays sleep onset."
@@ -275,7 +309,7 @@ def build_day_slots(
         "minutes": sleep_mins,
         "item_type": "sleep",
         "title": "Sleep Anchor & Recovery Window",
-        "purpose": "Systemic adaptation",
+        "purpose": "Sleep",
         "rationale": (
             f"Sleep anchor at {actual_sleep}. Target bedtime to preserve recovery window before {actual_wake} wake."
         ) + fallback_note,
