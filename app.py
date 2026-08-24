@@ -1789,6 +1789,9 @@ def member_preview_from_form(member, form):
             else member["premium"],
             "workout_plan": form.get("workout_plan") or member["workout_plan"],
             "diet_plan": form.get("diet_plan") or member["diet_plan"],
+            "wake_time": form.get("wake_time") or member["wake_time"],
+            "sleep_time": form.get("sleep_time") or member["sleep_time"],
+            "workout_time": form.get("workout_time") or member["workout_time"],
         }
     )
     return preview
@@ -3365,8 +3368,9 @@ def add_member():
         INSERT INTO members
         (name, phone, email, address, emergency_contact, age, gender, height_cm, weight_kg,
          goal, fitness_level, food_preference, medical_notes, injury_notes,
-         plan_name, premium, workout_subscription, diet_subscription, trainer_id, subscription_start, subscription_end, payment_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         plan_name, premium, workout_subscription, diet_subscription, trainer_id, subscription_start, subscription_end, payment_status,
+         wake_time, sleep_time, workout_time)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             request.form["name"],
@@ -3391,6 +3395,9 @@ def add_member():
             subscription_start,
             subscription_end,
             "Due",
+            request.form.get("wake_time"),
+            request.form.get("sleep_time"),
+            request.form.get("workout_time"),
         ),
     )
     db().commit()
@@ -4025,7 +4032,8 @@ def edit_member(member_id):
                 goal = ?, fitness_level = ?, food_preference = ?, medical_notes = ?, injury_notes = ?,
                 plan_name = ?, premium = ?, workout_subscription = ?, diet_subscription = ?, trainer_id = ?,
                 subscription_start = ?, subscription_end = ?, payment_status = ?,
-                workout_plan = ?, diet_plan = ?
+                workout_plan = ?, diet_plan = ?,
+                wake_time = ?, sleep_time = ?, workout_time = ?
             WHERE id = ?
             """,
             (
@@ -4053,6 +4061,9 @@ def edit_member(member_id):
                 request.form.get("payment_status", "Due"),
                 request.form.get("workout_plan"),
                 request.form.get("diet_plan"),
+                request.form.get("wake_time"),
+                request.form.get("sleep_time"),
+                request.form.get("workout_time"),
                 member_id,
             ),
         )
