@@ -23,170 +23,124 @@
     </div>
   </div>
   <div class="member-hero-side">
-    <span>Plan Status</span>
-    <strong>{{ plan.status|replace('_', ' ')|title if plan else "No Plan" }}</strong>
-    {% if plan and plan.provenance %}
-    <small>Provenance: {{ plan.provenance }}</small>
-    {% endif %}
+    <span>Pending review</span>
+    <strong>{{ plans|length }} plan{{ '' if plans|length == 1 else 's' }}</strong>
+    <small>{{ approved|length }} currently live</small>
   </div>
 </section>
 
-<!-- Blocked Plan Warning Banner (Phase 5 Non-Negotiable: Render NO approve control at all) -->
-{% if plan and (plan.status == 'blocked' or plan.blocked_reason) %}
-<section class="blocked-plan-banner" id="blocked-plan-notice">
-  <div style="display:flex; align-items:center; gap:10px;">
-    <span style="font-size:1.5rem;">🛑</span>
+{% for plan_block in plans %}
+{% set plan = plan_block.version %}
+<section class="panel" style="margin-bottom:20px;">
+  <div class="section-title">
+    <h2>{{ plan.plan_type|title }} plan
+      <span class="pill {% if plan.status == 'blocked' %}bad{% elif plan.status == 'approved' %}good{% else %}warn{% endif %}">{{ plan.status|replace('_',' ') }}</span>
+    </h2>
+    <small>
+      {{ plan_block.item_count }} item{{ '' if plan_block.item_count == 1 else 's' }} ·
+      {% if plan.provenance == 'ai' %}AI{% if plan.model %} · {{ plan.model }}{% endif %}{% elif plan.provenance == 'admin' %}edited by coach{% else %}built-in rule engine{% endif %}
+      {% if approved.get(plan.plan_type) %} · replaces the live version{% else %} · nothing live yet{% endif %}
+    </small>
+  </div>
+
+  {% if plan.blocked_reason %}
+  <div class="notice bad">
+    <strong>Blocked — this plan cannot be approved.</strong>
+    <p style="margin:6px 0 0;">{{ plan.blocked_reason }}</p>
+    <p style="margin:6px 0 0;">Correct the health questionnaire or refer the member to a clinician, then generate again. No one can override this, including an admin or owner.</p>
+  </div>
+  {% else %}
+  <div class="plan-approve-bar">
     <div>
-      <h3 style="margin:0; font-size:1.1rem; color:var(--bad-text);">Plan Blocked — Clinical Safety Gate Fired</h3>
-      <p style="margin:4px 0 0 0; font-weight:600;">Reason: {{ plan.blocked_reason }}</p>
+      <strong>Ready for approval</strong>
+      <small>Members see nothing until you approve. Every item below shows why it was chosen.</small>
+    </div>
+    <div class="plan-approve-actions">
+      <form method="post" action="{{ url_for('approve_plan_version', member_id=member.id, version_id=plan.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="note" value="Approved from review screen">
+        <button class="button primary" type="submit">Approve &amp; publish {{ plan.plan_type }}</button>
+      </form>
+      <form method="post" action="{{ url_for('reject_plan_version', member_id=member.id, version_id=plan.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input name="note" placeholder="Reason (required)" required>
+        <button class="button" type="submit">Reject</button>
+      </form>
     </div>
   </div>
-  <hr style="border:0; border-top:1px solid var(--bad); opacity:0.3; margin:8px 0;">
-  <p style="margin:0; font-size:0.9rem;">
-    <strong>What clears this block:</strong> Clinical blocks cannot be overridden by staff or admins. Update the health questionnaire if condition was recorded in error, or refer member to a clinician. Regenerating after updating profile will re-test the gate.
-  </p>
-</section>
-{% endif %}
+  {% endif %}
 
-<!-- Plan Approval Action Header (Only rendered when plan is NOT blocked) -->
-{% if plan and not plan.blocked_reason and plan.status in ['draft', 'pending_review'] %}
-<section class="panel" style="margin-bottom: 20px; background: var(--panel-2); display: flex; justify-content: space-between; align-items: center;">
-  <div>
-    <h3 style="margin: 0;">Plan Ready for Approval</h3>
-    <small style="color: var(--muted);">Review items below before publishing to member portal.</small>
-  </div>
-  <div>
-    <form method="post" action="{{ url_for('approve_plan_version', member_id=member.id, version_id=plan.id) }}" style="display:inline;">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <input type="hidden" name="action" value="approve_all">
-      <button class="button primary" type="submit">Approve & Publish Plan</button>
-    </form>
-  </div>
-</section>
-{% endif %}
-
-<!-- Plan Items Grouped by Day -->
-<section class="panel">
-  <div class="section-title">
-    <h2>Structured Plan Items</h2>
-    <small>Every item includes timing rationale, confidence level, and clinical evidence grade.</small>
-  </div>
-
-  {% if plan_items %}
-  <div style="display: flex; flex-direction: column; gap: 24px; margin-top: 15px;">
-    {% for day_label, items in items_by_day.items() %}
-    <div style="border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; background: var(--panel-2);">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; border-bottom: 1px solid var(--line); padding-bottom: 10px;">
-        <h3 style="margin: 0; font-size: 1.1rem; color: var(--ink);">{{ day_label }}</h3>
-        
+  {% if plan_block.items %}
+  {% for day_label, items in plan_block.items_by_day.items() %}
+  <div class="plan-day">
+    <h3>{{ day_label }}</h3>
+    {% for item in items %}
+    <div class="plan-item">
+      <div class="plan-item-head">
+        <span class="pill tabular-nums">{{ item.slot_time or "--:--" }}</span>
+        <strong>{{ item.title }}</strong>
+        <span class="pill">{{ item.item_type }}</span>
+        {% if item.confidence %}
+        <span class="pill {% if item.confidence == 'High' %}good{% elif item.confidence == 'Medium' %}warn{% else %}bad{% endif %}">{{ item.confidence }} confidence</span>
+        {% endif %}
+        <span class="pill">{{ 'AI' if item.provenance == 'ai' else ('coach' if item.provenance == 'admin' else 'rule') }}</span>
       </div>
-
-      <div style="display: flex; flex-direction: column; gap: 12px;">
-        {% for item in items %}
-        <div class="recommendation-card" style="background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 14px; display: flex; flex-direction: column; gap: 8px;">
-          <!-- Item Header & Badges -->
-          <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px;">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <span class="pill tabular-nums" style="font-weight: 700; background: var(--accent-soft); color: var(--accent);">
-                {{ item.slot_time }}
-              </span>
-              <h4 style="margin: 0; font-size: 1rem; color: var(--ink);">{{ item.title }}</h4>
-            </div>
-            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-              <span class="pill" style="font-size: 0.72rem; text-transform: uppercase;">{{ item.item_type }}</span>
-              <span class="pill {% if item.confidence == 'High' %}good{% elif item.confidence == 'Medium' %}warn{% else %}bad{% endif %}" style="font-size: 0.72rem;">
-                Confidence: {{ item.confidence }}
-              </span>
-              <span class="pill" style="font-size: 0.72rem; background: var(--panel-2); color: var(--muted);">
-                Provenance: {{ item.provenance or 'rule' }}
-              </span>
-            </div>
-          </div>
-
-          <!-- Detail & Rationale -->
-          {% if item.detail %}
-          <p style="margin: 0; font-size: 0.9rem; color: var(--ink); font-weight: 500;">{{ item.detail }}</p>
-          {% endif %}
-
-          <div style="background: var(--panel-2); padding: 8px 12px; border-radius: var(--radius-sm); font-size: 0.85rem; border-left: 3px solid var(--accent);">
-            <strong style="color: var(--accent); font-size: 0.75rem; text-transform: uppercase; display: block; margin-bottom: 2px;">Item Rationale</strong>
-            <p style="margin: 0; color: var(--card-text);">{{ item.rationale }}</p>
-          </div>
-
-          <!-- Evidence Grade & Source Link -->
-          {% if item.evidence_grade or item.evidence_source %}
-          <div style="font-size: 0.8rem; color: var(--muted); display: flex; align-items: center; gap: 8px;">
-            {% if item.evidence_grade %}
-            <span class="pill good" style="font-size: 0.7rem;">Grade {{ item.evidence_grade }}</span>
-            {% endif %}
-            {% if item.evidence_source %}
-              <span>Source: 
-                {% if item.source_url %}
-                <a href="{{ item.source_url }}" target="_blank" style="text-decoration: underline;">{{ item.evidence_source }}</a>
-                {% else %}
-                {{ item.evidence_source }}
-                {% endif %}
-              </span>
-            {% endif %}
-          </div>
-          {% endif %}
-
-          <!-- Inline Edit Button (Triggers Edit Modal) -->
-          <div style="margin-top: 4px; display: flex; justify-content: flex-end;">
-            <a href="#edit-plan-item-{{ item.id }}" class="button" style="padding: 4px 10px; font-size: 0.75rem;">Edit Item</a>
-          </div>
-
-          <!-- Edit Modal Overlay -->
-          <div id="edit-plan-item-{{ item.id }}" class="modal-overlay">
-            <div class="modal-content panel" style="max-width: 550px;">
-              <h3>Edit Plan Item ( provenance → admin )</h3>
-              <form class="grid-form" method="post" action="{{ url_for('edit_plan_item', member_id=member.id, version_id=plan.id, item_id=item.id) }}">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <input type="hidden" name="action" value="edit_item">
-                <input type="hidden" name="item_id" value="{{ item.id }}">
-
-                <label>Title<input name="title" value="{{ item.title }}" required></label>
-                <label>Slot Time (HH:MM)<input name="slot_time" class="tabular-nums" value="{{ item.slot_time }}" required></label>
-                <label>Detail (Sets/reps/macros)<input name="detail" value="{{ item.detail or '' }}"></label>
-                <label>Rationale (Mandatory non-empty explanation)<textarea name="rationale" rows="3" required>{{ item.rationale }}</textarea></label>
-                <label>Evidence Grade
-                  <select name="evidence_grade">
-                    <option value="" {% if not item.evidence_grade %}selected{% endif %}>None</option>
-                    <option value="A" {% if item.evidence_grade == 'A' %}selected{% endif %}>A — High Certainty</option>
-                    <option value="B" {% if item.evidence_grade == 'B' %}selected{% endif %}>B — Moderate Certainty</option>
-                    <option value="C" {% if item.evidence_grade == 'C' %}selected{% endif %}>C — Low Certainty</option>
-                    <option value="D" {% if item.evidence_grade == 'D' %}selected{% endif %}>D — Very Low</option>
-                  </select>
-                </label>
-                <label>Evidence Source<input name="evidence_source" value="{{ item.evidence_source or '' }}"></label>
-                <label>Source URL<input name="source_url" type="url" value="{{ item.source_url or '' }}"></label>
-
-                <div style="margin-top: 15px; display: flex; gap: 10px;">
-                  <button class="button primary" type="submit">Save Changes</button>
-                  <a href="#" class="button">Cancel</a>
-                </div>
-              </form>
-            </div>
-          </div>
-
-        </div>
-        {% endfor %}
+      {% if item.detail %}<p class="plan-item-detail">{{ item.detail }}</p>{% endif %}
+      <div class="plan-item-why">
+        <span class="why-label">Why this, and why now</span>
+        <p>{{ item.rationale }}</p>
+        {% if item.evidence_source %}
+        <p class="plan-evidence">
+          Evidence {{ item.evidence_grade or '—' }} ·
+          {% if item.source_url %}<a href="{{ item.source_url }}" target="_blank" rel="noopener">{{ item.evidence_source }}</a>{% else %}{{ item.evidence_source }}{% endif %}
+        </p>
+        {% endif %}
       </div>
+      <details class="plan-item-edit">
+        <summary>Edit this item</summary>
+        <form class="grid-form" method="post" action="{{ url_for('edit_plan_item', member_id=member.id, version_id=plan.id, item_id=item.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <label>Title<input name="title" value="{{ item.title }}"></label>
+          <label>Detail<input name="detail" value="{{ item.detail or '' }}"></label>
+          <label class="span-3">Rationale<textarea name="rationale" rows="3">{{ item.rationale }}</textarea></label>
+          <button class="button" type="submit">Save item</button>
+        </form>
+      </details>
     </div>
     {% endfor %}
   </div>
+  {% endfor %}
   {% else %}
+  <p class="empty-hint">This version has no items, which should not happen. Generate again.</p>
+  {% endif %}
+</section>
+{% endfor %}
+
+{% if not plans %}
+<section class="panel">
   <div class="empty-state">
-    <p>No plan has been generated for this member yet.</p>
-    <p class="empty-hint">Generating builds a plan from the member's goal, health profile, and
+    <p>No plan is waiting for review.</p>
+    <p class="empty-hint">Generating builds a plan from this member's goal, health profile and
     their wake, training and sleep times, then runs it through the clinical safety check.
     Nothing reaches the member until you approve it.</p>
     <form method="post" action="{{ url_for('regenerate', member_id=member.id) }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="button primary" type="submit">Generate plan</button>
     </form>
+    {% if approved %}
+    <p class="empty-hint">{{ approved|length }} approved plan{{ '' if approved|length == 1 else 's' }} already live for this member.</p>
+    {% endif %}
   </div>
-  {% endif %}
+</section>
+{% endif %}
+
+<section class="panel">
+  <div class="section-title"><h2>Generate again</h2>
+    <small>Creates a fresh draft. The live plan keeps running until you approve the new one.</small></div>
+  <form method="post" action="{{ url_for('regenerate', member_id=member.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="button" type="submit">Regenerate draft</button>
+  </form>
 </section>
 
 <style>
