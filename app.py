@@ -12,7 +12,7 @@ import time
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from flask import Flask, abort, g, has_request_context, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, flash, g, has_request_context, redirect, render_template, request, send_file, session, url_for
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from openpyxl import Workbook
@@ -724,6 +724,43 @@ def query_one(query, params=()):
     return db().execute(query, params).fetchone()
 
 
+def _migrate_legacy_plans(cursor):
+    """Copy existing members.workout_plan / diet_plan text into plan_versions.
+
+    One approved admin version per member and plan type, with a single plan_item
+    carrying the original text. Keeps the old columns readable for this release.
+    """
+    members = cursor.execute(
+        "SELECT id, workout_plan, diet_plan FROM members WHERE COALESCE(workout_plan, '') != '' OR COALESCE(diet_plan, '') != ''"
+    ).fetchall()
+    for member_id, workout_plan, diet_plan in members:
+        for plan_type, plan_text in (("workout", workout_plan), ("diet", diet_plan)):
+            if not plan_text or not plan_text.strip():
+                continue
+            existing = cursor.execute(
+                "SELECT 1 FROM plan_versions WHERE member_id = ? AND plan_type = ? AND status = 'approved' LIMIT 1",
+                (member_id, plan_type),
+            ).fetchone()
+            if existing:
+                continue
+            cursor.execute(
+                """
+                INSERT INTO plan_versions (member_id, plan_type, status, provenance, generated_at)
+                VALUES (?, ?, 'approved', 'admin', ?)
+                """,
+                (member_id, plan_type, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            version_id = cursor.lastrowid
+            item_type = "exercise" if plan_type == "workout" else "meal"
+            cursor.execute(
+                """
+                INSERT INTO plan_items (plan_version_id, day_label, item_type, title, detail, rationale, position)
+                VALUES (?, 'Legacy plan', ?, 'Legacy plan', ?, ?, 0)
+                """,
+                (version_id, item_type, plan_text, f"Migrated from members.{plan_type}_plan."),
+            )
+
+
 def init_db():
     connection = sqlite3.connect(DB_PATH)
     cursor = connection.cursor()
@@ -1008,6 +1045,53 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(member_id) REFERENCES members(id)
         );
+
+        CREATE TABLE IF NOT EXISTS plan_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            member_id INTEGER NOT NULL,
+            plan_type TEXT NOT NULL CHECK(plan_type IN ('workout', 'diet')),
+            status TEXT NOT NULL CHECK(status IN ('draft', 'pending_review', 'approved', 'rejected', 'superseded', 'blocked')),
+            provenance TEXT CHECK(provenance IN ('rule', 'ai', 'admin')),
+            model TEXT,
+            blocked_reason TEXT,
+            generated_at TEXT,
+            reviewed_by INTEGER,
+            reviewed_at TEXT,
+            review_note TEXT,
+            FOREIGN KEY(member_id) REFERENCES members(id) ON DELETE CASCADE,
+            FOREIGN KEY(reviewed_by) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS plan_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_version_id INTEGER NOT NULL,
+            day_label TEXT,
+            slot_time TEXT,
+            item_type TEXT CHECK(item_type IN ('exercise', 'meal', 'hydration', 'supplement', 'recovery')),
+            title TEXT,
+            detail TEXT,
+            rationale TEXT NOT NULL,
+            evidence_grade TEXT,
+            evidence_source TEXT,
+            source_url TEXT,
+            confidence TEXT,
+            position INTEGER,
+            provenance TEXT CHECK(provenance IN ('rule', 'ai', 'admin')),
+            FOREIGN KEY(plan_version_id) REFERENCES plan_versions(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS plan_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_version_id INTEGER NOT NULL,
+            reviewed_by INTEGER,
+            action TEXT NOT NULL CHECK(action IN ('approve', 'reject', 'edit')),
+            note TEXT,
+            before_json TEXT,
+            after_json TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(plan_version_id) REFERENCES plan_versions(id) ON DELETE CASCADE,
+            FOREIGN KEY(reviewed_by) REFERENCES users(id)
+        );
         """
     )
 
@@ -1059,6 +1143,9 @@ def init_db():
         "supplements": "TEXT",
         "workout_subscription": "TEXT DEFAULT 'Regular'",
         "diet_subscription": "TEXT DEFAULT 'None'",
+        "wake_time": "TEXT",
+        "sleep_time": "TEXT",
+        "workout_time": "TEXT",
     }
     for column, column_type in extra_member_columns.items():
         if column not in member_columns:
@@ -1122,6 +1209,24 @@ def init_db():
         ON notifications (event_key) WHERE event_key IS NOT NULL
         """
     )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_plan_versions_member_type_status
+        ON plan_versions (member_id, plan_type, status)
+        """
+    )
+
+    plan_item_columns = {row[1] for row in cursor.execute("PRAGMA table_info(plan_items)").fetchall()}
+    if "provenance" not in plan_item_columns:
+        cursor.execute(
+            "ALTER TABLE plan_items ADD COLUMN provenance TEXT CHECK(provenance IN ('rule', 'ai', 'admin'))"
+        )
+
+    # Migrate legacy plan text into approved admin plan versions so nobody loses
+    # a plan on upgrade. Idempotent: skip members who already have an approved
+    # version for the plan type.
+    _migrate_legacy_plans(cursor)
 
     user_columns = {row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()}
     if "must_change_password" not in user_columns:
