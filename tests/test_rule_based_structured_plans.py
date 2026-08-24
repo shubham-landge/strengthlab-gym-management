@@ -89,7 +89,7 @@ def test_circadian_service_late_training_adds_wind_down():
 
 
 def test_circadian_service_short_sleep_flagged():
-    slots = circadian_service.build_day_slots("06:30", "18:30", "12:00")
+    slots = circadian_service.build_day_slots("06:30", "18:30", "01:00")
     training = next(s for s in slots if s["purpose"] == "Training")
     assert "below 7-hour floor" in training["rationale"]
 
