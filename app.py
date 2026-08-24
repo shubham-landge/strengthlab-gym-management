@@ -1671,42 +1671,68 @@ def recipe_cards(member, calories, protein, carbs, fat):
     ]
 
 
-def generate_rule_based_plans(member):
-    goal = member_text(member, "primary_fitness_goal") or member_text(member, "goal", "general fitness")
-    level = member_text(member, "fitness_level", "Beginner")
-    injury_text = member_text(member, "injury_notes")
-    premium = bool(member["premium"])
-    blueprint = workout_blueprint(level, goal, injury_text)
-    available = ", ".join(equipment_names())
+def _persist_structured_plan(member_id, plan_type, items, provenance="rule", model=None, status="draft", blocked_reason=None):
+    """Insert a plan_version and its plan_items. Does not touch approved rows."""
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with transaction() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO plan_versions (member_id, plan_type, status, provenance, model, generated_at, blocked_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (member_id, plan_type, status, provenance, model, generated_at, blocked_reason),
+        )
+        version_id = cursor.lastrowid
+        for pos, item in enumerate(items):
+            conn.execute(
+                """
+                INSERT INTO plan_items (
+                    plan_version_id, day_label, slot_time, item_type, title, detail,
+                    rationale, evidence_grade, evidence_source, source_url, confidence, position
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    version_id,
+                    item.get("day_label"),
+                    item.get("slot_time"),
+                    item.get("item_type"),
+                    item.get("title"),
+                    item.get("detail"),
+                    item.get("rationale", ""),
+                    item.get("evidence_grade"),
+                    item.get("evidence_source"),
+                    item.get("source_url"),
+                    item.get("confidence"),
+                    item.get("position", pos),
+                ),
+            )
+    return version_id
 
-    workout_lines = [
+
+def _build_workout_text(member, blueprint, available, items):
+    lines = [
         "STRENGTHLAB TRAINING BLUEPRINT",
-        f"Goal: {goal}",
-        f"Level: {level}",
+        f"Goal: {member_text(member, 'primary_fitness_goal') or member_text(member, 'goal', 'general fitness')}",
+        f"Level: {member_text(member, 'fitness_level', 'Beginner')}",
         f"Split: {blueprint['split']} | Weekly frequency: {blueprint['days']} days",
         f"Intensity: {blueprint['rpe']} | Default rest: {blueprint['rest']}",
         "",
-        "Global warm-up: 5-8 min treadmill or cycle, then shoulder circles, hip openers, knee/ankle prep, and one light warm-up set.",
     ]
-    for title, exercises in session_templates(blueprint["split"]):
-        workout_lines.extend(
-            [
-                "",
-                title,
-                "Warm-up: easy treadmill/cycle 5 min + movement-specific ramp set.",
-                "Main work:",
-            ]
-        )
-        for exercise in exercises:
-            workout_lines.append(f"- {exercise}: {blueprint['sets']} sets x {blueprint['reps']} reps, {blueprint['rpe']}, rest {blueprint['rest']}.")
-        workout_lines.extend(
-            [
-                f"Conditioning: {blueprint['conditioning']}",
-                "Cool-down: 4-6 min slow walk/cycle, hamstring stretch, chest stretch, breathing reset.",
-                "Coach notes: keep form clean before loading; record load/reps after every session.",
-            ]
-        )
-    workout_lines.extend(
+    current_day = None
+    for item in sorted(items, key=lambda x: (x.get("day_label", ""), x.get("position", 0))):
+        day = item.get("day_label", "")
+        if day != current_day:
+            lines.append("")
+            lines.append(day)
+            current_day = day
+        lines.append(f"- {item['title']}: {item['detail']}")
+        lines.append(f"  Rationale: {item['rationale']}")
+        if item.get("confidence"):
+            lines.append(f"  Confidence: {item['confidence']}")
+        if item.get("slot_time"):
+            lines.append(f"  Time: {item['slot_time']}")
+    lines.extend(
         [
             "",
             f"Progression: {blueprint['progression']}",
@@ -1714,43 +1740,241 @@ def generate_rule_based_plans(member):
             f"Safety: {blueprint['safety']}",
         ]
     )
-    if premium:
-        workout_lines.append("Premium review: admin/trainer should review execution weekly and adjust volume or exercise selection.")
+    if bool(member["premium"]):
+        lines.append("Premium review: admin/trainer should review execution weekly and adjust volume or exercise selection.")
+    return "\n".join(lines)
 
-    calories, protein, carbs, fat = nutrition_targets(member, goal)
-    food_preference = member_text(member, "food_preference", "balanced local meals")
-    diet_lines = [
+
+def _build_diet_text(member, calories, protein, carbs, fat, food_preference, items):
+    lines = [
         "STRENGTHLAB NUTRITION BLUEPRINT",
-        f"Goal: {goal}",
+        f"Goal: {member_text(member, 'primary_fitness_goal') or member_text(member, 'goal', 'general fitness')}",
         f"Food preference: {food_preference}",
         f"Daily targets: {calories} kcal, protein {protein} g, carbs {carbs} g, fat {fat} g.",
-        "Meal timing: keep 3 main meals plus 1 snack unless the member prefers fewer meals.",
-        "Hydration: 35-45 ml water per kg body weight; add electrolytes after heavy sweat sessions.",
-        "Restriction rule: avoid listed allergies/exclusions first, then adjust protein source.",
         "",
-        "Recipe cards:",
     ]
-    for index, recipe in enumerate(recipe_cards(member, calories, protein, carbs, fat), start=1):
-        diet_lines.extend(
-            [
-                "",
-                f"{index}. {recipe['title']}",
-                f"Ingredients: {recipe['ingredients']}",
-                f"Steps: {recipe['steps']}",
-                f"Macros: {recipe['macros']}",
-            ]
-        )
-    diet_lines.extend(
+    for item in sorted(items, key=lambda x: x.get("slot_time", "")):
+        lines.append(f"- {item['title']}: {item['detail']}")
+        lines.append(f"  Rationale: {item['rationale']}")
+        if item.get("confidence"):
+            lines.append(f"  Confidence: {item['confidence']}")
+        if item.get("slot_time"):
+            lines.append(f"  Time: {item['slot_time']}")
+    lines.extend(
         [
             "",
             "Weekly adjustment: if weight is not moving for 2 weeks, adjust daily calories by 150-200 based on the goal.",
-            f"Safety: {blueprint['safety']} Nutrition guidance is educational and not medical treatment.",
+            "Safety: Nutrition guidance is educational and not medical treatment.",
         ]
     )
-    if premium:
-        diet_lines.append("Premium review: admin can add one flexible restaurant meal and a Sunday prep list.")
+    if bool(member["premium"]):
+        lines.append("Premium review: admin can add one flexible restaurant meal and a Sunday prep list.")
+    return "\n".join(lines)
 
-    return "\n".join(workout_lines), "\n".join(diet_lines)
+
+def generate_rule_based_plans(member):
+    from services import circadian_service
+    from services.clinical_recommendation_service import get_or_create_health_profile
+    from services.supplement_recommendation_service import plan_safety_gate
+
+    member_id = member["id"]
+    goal = member_text(member, "primary_fitness_goal") or member_text(member, "goal", "general fitness")
+    level = member_text(member, "fitness_level", "Beginner")
+    injury_text = member_text(member, "injury_notes")
+    premium = bool(member["premium"])
+    blueprint = workout_blueprint(level, goal, injury_text)
+    available = ", ".join(equipment_names())
+    calories, protein, carbs, fat = nutrition_targets(member, goal)
+    food_preference = member_text(member, "food_preference", "balanced local meals")
+
+    wake = member_text(member, "wake_time") or None
+    workout_time = member_text(member, "workout_time") or None
+    sleep = member_text(member, "sleep_time") or None
+    slots = circadian_service.build_day_slots(wake, workout_time, sleep)
+
+    # --- safety gate ----------------------------------------------------------
+    health_profile = get_or_create_health_profile(db(), member_id)
+    safety_warnings = plan_safety_gate(member, health_profile)
+    blocked_reason = "\n".join(safety_warnings) if safety_warnings else None
+    plan_status = "blocked" if safety_warnings else "draft"
+
+    # --- workout items --------------------------------------------------------
+    workout_items = []
+    day_templates = session_templates(blueprint["split"])
+
+    for day_label, exercises in day_templates:
+        training_slot = next(
+            (s for s in slots if s["purpose"] == "Training"),
+            {"slot_time": "18:00", "item_type": "exercise", "purpose": "Training", "rationale": "Default training slot.", "confidence": "Low"},
+        )
+
+        # Warm-up
+        wake_slot = next((s for s in slots if s["purpose"] == "Wake"), None)
+        if wake_slot and "Early session" in training_slot.get("rationale", ""):
+            warm_rationale = (
+                f"Extended warm-up: core temperature is lowest on waking at {wake_slot['slot_time']}, "
+                "so add 5–10 min of general movement before ramp sets."
+            )
+        else:
+            warm_rationale = f"Prepare joints and raise core temperature before loading for {day_label} at {level} level."
+        workout_items.append({
+            "day_label": day_label,
+            "slot_time": training_slot["slot_time"],
+            "item_type": "recovery",
+            "title": "Warm-up",
+            "detail": "5-8 min treadmill or cycle, shoulder circles, hip openers, knee/ankle prep, one light warm-up set.",
+            "rationale": warm_rationale,
+            "confidence": "High",
+            "position": 0,
+        })
+
+        # Main exercises
+        for pos, exercise in enumerate(exercises, start=1):
+            detail = f"{blueprint['sets']} sets x {blueprint['reps']} reps, {blueprint['rpe']}, rest {blueprint['rest']}."
+            rationale = f"Primary movement for {day_label.split('·')[-1].strip() if '·' in day_label else day_label}. Selected for goal '{goal}' at {level} level. "
+            if injury_text and injury_text.lower() not in {"none", "no", "na"}:
+                rationale += f"Modified around injury note: {injury_text}. Use pain-free range and trainer clearance."
+            else:
+                rationale += "Pain-free range of motion required; stop if joint pain appears."
+            workout_items.append({
+                "day_label": day_label,
+                "slot_time": training_slot["slot_time"],
+                "item_type": "exercise",
+                "title": exercise,
+                "detail": detail,
+                "rationale": rationale,
+                "confidence": "High",
+                "position": pos,
+            })
+
+        # Conditioning
+        cond_pos = len(exercises) + 1
+        cond_rationale = f"Matched to goal '{goal}' and {level} capacity. {blueprint['conditioning']}"
+        if injury_text and injury_text.lower() not in {"none", "no", "na"}:
+            cond_rationale += f" Modified around injury note: {injury_text}."
+        workout_items.append({
+            "day_label": day_label,
+            "slot_time": training_slot["slot_time"],
+            "item_type": "exercise",
+            "title": "Conditioning",
+            "detail": blueprint["conditioning"],
+            "rationale": cond_rationale,
+            "confidence": "High",
+            "position": cond_pos,
+        })
+
+        # Cool-down
+        cooldown_rationale = f"Down-regulate sympathetic tone after {day_label} at {level} level and begin recovery before leaving the gym."
+        if injury_text and injury_text.lower() not in {"none", "no", "na"}:
+            cooldown_rationale += f" Respect injury note: {injury_text} during stretching."
+        workout_items.append({
+            "day_label": day_label,
+            "slot_time": training_slot["slot_time"],
+            "item_type": "recovery",
+            "title": "Cool-down",
+            "detail": "4-6 min slow walk/cycle, hamstring stretch, chest stretch, breathing reset.",
+            "rationale": cooldown_rationale,
+            "confidence": "High",
+            "position": cond_pos + 1,
+        })
+
+        # Late-training wind-down
+        wind_slot = next((s for s in slots if s["purpose"] == "Wind-down"), None)
+        if wind_slot:
+            workout_items.append({
+                "day_label": day_label,
+                "slot_time": wind_slot["slot_time"],
+                "item_type": "recovery",
+                "title": "Wind-down",
+                "detail": "10 min nasal breathing, light hamstring/hip flexor stretch, dim lights.",
+                "rationale": wind_slot["rationale"],
+                "confidence": "High",
+                "position": cond_pos + 2,
+            })
+
+        # Short-sleep flag
+        if any("below 7-hour floor" in s.get("rationale", "") for s in slots):
+            sleep_slot = next((s for s in slots if s["purpose"] == "Sleep"), None)
+            workout_items.append({
+                "day_label": day_label,
+                "slot_time": sleep_slot["slot_time"] if sleep_slot else sleep,
+                "item_type": "recovery",
+                "title": "Sleep priority",
+                "detail": f"Target {sleep_slot['slot_time'] if sleep_slot else sleep} bedtime. Volume reduced ~20% because sleep window is under 7 hours.",
+                "rationale": "Short sleep window flagged by circadian rule: sleep < 7 h triggers volume reduction for recovery safety.",
+                "confidence": "High",
+                "position": cond_pos + 3,
+            })
+
+    # --- diet items -----------------------------------------------------------
+    diet_items = []
+    day_label = "Every day"
+    recipes = recipe_cards(member, calories, protein, carbs, fat)
+    recipe_map = {}
+    if recipes:
+        recipe_map["Breakfast"] = recipes[0]
+    if len(recipes) > 2:
+        recipe_map["Pre-workout meal"] = recipes[2]
+        recipe_map["Post-workout"] = recipes[2]
+    if len(recipes) > 3:
+        recipe_map["Last meal"] = recipes[3]
+    recipe_map["Pre-workout light carb"] = {
+        "title": "Light carb top-up",
+        "ingredients": "Banana 1 or rice cakes 2 with honey.",
+        "macros": f"~{round(calories * 0.05)} kcal, quick carbs.",
+    }
+
+    for slot in slots:
+        purpose = slot["purpose"]
+        if purpose in ("Wake", "Sleep", "Training", "Wind-down"):
+            continue
+
+        recipe = recipe_map.get(purpose)
+        if purpose == "Morning hydration":
+            diet_items.append({
+                "day_label": day_label,
+                "slot_time": slot["slot_time"],
+                "item_type": "hydration",
+                "title": "Morning hydration",
+                "detail": "300–500 ml water. Add electrolytes after heavy sweat sessions.",
+                "rationale": slot["rationale"],
+                "confidence": slot.get("confidence", "High"),
+                "position": len(diet_items),
+            })
+        elif purpose == "Caffeine cut-off":
+            diet_items.append({
+                "day_label": day_label,
+                "slot_time": slot["slot_time"],
+                "item_type": "supplement",
+                "title": "Caffeine cut-off",
+                "detail": "No caffeine after this time.",
+                "rationale": slot["rationale"],
+                "confidence": slot.get("confidence", "High"),
+                "position": len(diet_items),
+            })
+        elif recipe:
+            diet_items.append({
+                "day_label": day_label,
+                "slot_time": slot["slot_time"],
+                "item_type": "meal",
+                "title": recipe["title"],
+                "detail": f"Ingredients: {recipe['ingredients']}. Macros: {recipe['macros']}",
+                "rationale": (
+                    f"{slot['rationale']} Food preference: {food_preference}. "
+                    f"Daily target: {calories} kcal, protein {protein} g."
+                ),
+                "confidence": slot.get("confidence", "High"),
+                "position": len(diet_items),
+            })
+
+    # --- persist structured data ----------------------------------------------
+    _persist_structured_plan(member_id, "workout", workout_items, provenance="rule", status=plan_status, blocked_reason=blocked_reason)
+    _persist_structured_plan(member_id, "diet", diet_items, provenance="rule", status=plan_status, blocked_reason=blocked_reason)
+
+    # --- legacy text for backward compatibility -------------------------------
+    workout_text = _build_workout_text(member, blueprint, available, workout_items)
+    diet_text = _build_diet_text(member, calories, protein, carbs, fat, food_preference, diet_items)
+    return workout_text, diet_text
 
 
 def apply_customization_notes(plan_text, customizations):
