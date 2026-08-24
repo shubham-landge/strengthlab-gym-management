@@ -2711,6 +2711,45 @@ def extract_day_plan(workout_plan, day_label):
     return picked
 
 
+def _approved_workout_items(member_id, focus):
+    """Return exercise items from the latest approved workout plan version for the given focus day."""
+    version = query_one(
+        """
+        SELECT * FROM plan_versions
+        WHERE member_id = ? AND plan_type = 'workout' AND status = 'approved'
+        ORDER BY generated_at DESC, id DESC LIMIT 1
+        """,
+        (member_id,),
+    )
+    if not version:
+        return None
+    # Fuzzy match day_label because stored labels are "Day 1 - Full Body A"
+    # while schedule focus is "Full Body A".
+    focus_words = [w for w in focus.replace("/", " ").split() if len(w) > 1]
+    all_items = query_all(
+        """
+        SELECT * FROM plan_items
+        WHERE plan_version_id = ? AND item_type = 'exercise'
+        ORDER BY position
+        """,
+        (version["id"],),
+    )
+    # Group by day_label and find the best match
+    day_groups = {}
+    for item in all_items:
+        day = item["day_label"] or ""
+        day_groups.setdefault(day, []).append(item)
+    matched_items = []
+    for day_label, items in day_groups.items():
+        day_lower = day_label.lower()
+        if all(word.lower() in day_lower for word in focus_words):
+            matched_items = items
+            break
+    if not matched_items:
+        return []
+    return [f"{item['title']}: {item['detail']}" for item in matched_items]
+
+
 def personalized_today_plan(member):
     level = infer_training_level(member)
     schedule = level_schedule(level)
@@ -2720,8 +2759,13 @@ def personalized_today_plan(member):
         start_date = date.today()
     day_number = (date.today() - start_date).days % 7
     focus = schedule[day_number]
-    workout_items = extract_day_plan(member["workout_plan"], focus)
-    if not workout_items and "rest" not in focus.lower() and "recovery" not in focus.lower() and "mobility" not in focus.lower():
+    workout_items = _approved_workout_items(member["id"], focus)
+    if workout_items is None:
+        # Honest empty state: no approved plan exists yet
+        workout_items = [
+            "No approved workout plan is available yet. Ask staff to review and approve your plan.",
+        ]
+    elif not workout_items and "rest" not in focus.lower() and "recovery" not in focus.lower() and "mobility" not in focus.lower():
         workout_items = [
             f"{focus}: follow your saved workout plan with controlled form.",
             "Keep 1-3 reps in reserve unless your trainer says otherwise.",
@@ -5248,10 +5292,25 @@ def recommendations_review(member_id):
             flash("Fresh recommendation drafts generated successfully.", "good")
         elif action == "approve":
             rec_id = request.form.get("rec_id")
+            note = request.form.get("note", "").strip()
             execute("UPDATE member_recommendations SET status = 'approved' WHERE id = ? AND member_id = ?", (rec_id, member_id))
+            user = current_user()
+            execute(
+                "INSERT INTO recommendation_reviews (recommendation_id, reviewed_by, status, review_note) VALUES (?, ?, 'approved', ?)",
+                (rec_id, user["id"], note or "Approved"),
+            )
         elif action == "reject":
             rec_id = request.form.get("rec_id")
+            note = request.form.get("note", "").strip()
+            if not note:
+                flash("Rejection requires a note.", "error")
+                return redirect(url_for("recommendations_review", member_id=member_id))
             execute("UPDATE member_recommendations SET status = 'rejected' WHERE id = ? AND member_id = ?", (rec_id, member_id))
+            user = current_user()
+            execute(
+                "INSERT INTO recommendation_reviews (recommendation_id, reviewed_by, status, review_note) VALUES (?, ?, 'rejected', ?)",
+                (rec_id, user["id"], note),
+            )
         elif action == "edit":
             rec_id = request.form.get("rec_id")
             execute(
@@ -5307,6 +5366,319 @@ def recommendations_review(member_id):
         whatsapp_link=whatsapp_link,
         sent_count=sent_count
     )
+
+
+@app.route("/members/<int:member_id>/plan-versions/<int:version_id>/approve", methods=["POST"])
+@role_required("admin", "trainer", "owner")
+def approve_plan_version(member_id, version_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member or not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+
+    version = query_one("SELECT * FROM plan_versions WHERE id = ? AND member_id = ?", (version_id, member_id))
+    if not version:
+        abort(404)
+
+    # Blocked plans must not be approved by anyone, including admin and owner.
+    # This check runs before any form field is read.
+    # A non-null blocked_reason is the canonical guard regardless of current status.
+    if version["blocked_reason"]:
+        abort(403)
+
+    user = current_user()
+    note = request.form.get("note", "").strip()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with transaction() as conn:
+        # Supersede any prior approved version for this member and plan type
+        conn.execute(
+            """
+            UPDATE plan_versions
+            SET status = 'superseded', reviewed_by = ?, reviewed_at = ?
+            WHERE member_id = ? AND plan_type = ? AND status = 'approved'
+            """,
+            (user["id"], now, member_id, version["plan_type"]),
+        )
+        # Approve the requested version
+        conn.execute(
+            """
+            UPDATE plan_versions
+            SET status = 'approved', reviewed_by = ?, reviewed_at = ?, review_note = ?
+            WHERE id = ?
+            """,
+            (user["id"], now, note, version_id),
+        )
+        # Append audit row
+        conn.execute(
+            """
+            INSERT INTO plan_reviews (plan_version_id, reviewed_by, action, note, before_json, after_json, created_at)
+            VALUES (?, ?, 'approve', ?, ?, ?, ?)
+            """,
+            (
+                version_id,
+                user["id"],
+                note,
+                json.dumps({"status": version["status"]}),
+                json.dumps({"status": "approved"}),
+                now,
+            ),
+        )
+
+    flash("Plan version approved.", "good")
+    return redirect(url_for("member_detail", member_id=member_id))
+
+
+@app.route("/members/<int:member_id>/plan-versions/<int:version_id>/reject", methods=["POST"])
+@role_required("admin", "trainer", "owner")
+def reject_plan_version(member_id, version_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member or not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+
+    version = query_one("SELECT * FROM plan_versions WHERE id = ? AND member_id = ?", (version_id, member_id))
+    if not version:
+        abort(404)
+
+    note = request.form.get("note", "").strip()
+    if not note:
+        flash("Rejection requires a note.", "error")
+        return redirect(url_for("member_detail", member_id=member_id))
+
+    user = current_user()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with transaction() as conn:
+        conn.execute(
+            """
+            UPDATE plan_versions
+            SET status = 'rejected', reviewed_by = ?, reviewed_at = ?, review_note = ?
+            WHERE id = ?
+            """,
+            (user["id"], now, note, version_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO plan_reviews (plan_version_id, reviewed_by, action, note, before_json, after_json, created_at)
+            VALUES (?, ?, 'reject', ?, ?, ?, ?)
+            """,
+            (
+                version_id,
+                user["id"],
+                note,
+                json.dumps({"status": version["status"]}),
+                json.dumps({"status": "rejected"}),
+                now,
+            ),
+        )
+
+    flash("Plan version rejected.", "good")
+    return redirect(url_for("member_detail", member_id=member_id))
+
+
+@app.route("/members/<int:member_id>/plan-versions/<int:version_id>/edit", methods=["POST"])
+@role_required("admin", "trainer", "owner")
+def edit_plan_version(member_id, version_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member or not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+
+    version = query_one("SELECT * FROM plan_versions WHERE id = ? AND member_id = ?", (version_id, member_id))
+    if not version:
+        abort(404)
+
+    user = current_user()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    item_id = request.form.get("item_id", "").strip()
+
+    # --- item-level edit -----------------------------------------------------
+    if item_id:
+        item = query_one(
+            "SELECT * FROM plan_items WHERE id = ? AND plan_version_id = ?",
+            (item_id, version_id),
+        )
+        if not item:
+            abort(404)
+
+        new_title = request.form.get("title", "").strip()
+        new_detail = request.form.get("detail", "").strip()
+        new_rationale = request.form.get("rationale", "").strip()
+
+        if not new_rationale:
+            flash("Item edit requires a non-empty rationale.", "error")
+            return redirect(url_for("member_detail", member_id=member_id))
+
+        note = request.form.get("note", "").strip() or f"Edited item {item_id}"
+
+        before_item = {
+            "title": item["title"],
+            "detail": item["detail"],
+            "rationale": item["rationale"],
+            "provenance": item["provenance"] if "provenance" in item.keys() else None,
+        }
+
+        updates = []
+        params = []
+        if new_title:
+            updates.append("title = ?")
+            params.append(new_title)
+        if new_detail:
+            updates.append("detail = ?")
+            params.append(new_detail)
+        updates.append("rationale = ?")
+        params.append(new_rationale)
+        updates.append("provenance = ?")
+        params.append("admin")
+        params.extend([item_id, version_id])
+
+        with transaction() as conn:
+            conn.execute(
+                f"UPDATE plan_items SET {', '.join(updates)} WHERE id = ? AND plan_version_id = ?",
+                params,
+            )
+            after_item = {
+                "title": new_title or item["title"],
+                "detail": new_detail or item["detail"],
+                "rationale": new_rationale,
+                "provenance": "admin",
+            }
+            conn.execute(
+                """
+                INSERT INTO plan_reviews (plan_version_id, reviewed_by, action, note, before_json, after_json, created_at)
+                VALUES (?, ?, 'edit', ?, ?, ?, ?)
+                """,
+                (
+                    version_id,
+                    user["id"],
+                    note,
+                    json.dumps(before_item),
+                    json.dumps(after_item),
+                    now,
+                ),
+            )
+
+        flash("Plan item updated.", "good")
+        return redirect(url_for("member_detail", member_id=member_id))
+
+    # --- version-level edit --------------------------------------------------
+    before = {
+        "status": version["status"],
+        "review_note": version["review_note"] or "",
+    }
+
+    note = request.form.get("note", "").strip()
+    new_status = request.form.get("status", version["status"]).strip()
+    allowed = {"draft", "pending_review", "approved", "rejected", "blocked"}
+    if new_status not in allowed:
+        new_status = version["status"]
+
+    # Blocked versions (blocked_reason set) may not be promoted to approved
+    # through the edit route.
+    if version["blocked_reason"] and new_status == "approved":
+        flash("Blocked plans cannot be approved through edit.", "error")
+        return redirect(url_for("member_detail", member_id=member_id))
+
+    with transaction() as conn:
+        conn.execute(
+            """
+            UPDATE plan_versions
+            SET status = ?, reviewed_by = ?, reviewed_at = ?, review_note = ?
+            WHERE id = ?
+            """,
+            (new_status, user["id"], now, note, version_id),
+        )
+        after = {
+            "status": new_status,
+            "review_note": note,
+        }
+        conn.execute(
+            """
+            INSERT INTO plan_reviews (plan_version_id, reviewed_by, action, note, before_json, after_json, created_at)
+            VALUES (?, ?, 'edit', ?, ?, ?, ?)
+            """,
+            (
+                version_id,
+                user["id"],
+                note,
+                json.dumps(before),
+                json.dumps(after),
+                now,
+            ),
+        )
+
+    flash("Plan version updated.", "good")
+    return redirect(url_for("member_detail", member_id=member_id))
+
+
+@app.route("/members/<int:member_id>/plan-versions/<int:version_id>/items/<int:item_id>/edit", methods=["POST"])
+@role_required("admin", "trainer", "owner")
+def edit_plan_item(member_id, version_id, item_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member or not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+
+    version = query_one("SELECT * FROM plan_versions WHERE id = ? AND member_id = ?", (version_id, member_id))
+    if not version:
+        abort(404)
+
+    item = query_one("SELECT * FROM plan_items WHERE id = ? AND plan_version_id = ?", (item_id, version_id))
+    if not item:
+        abort(404)
+
+    user = current_user()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Build before snapshot of the item
+    before = {
+        "title": item["title"] or "",
+        "detail": item["detail"] or "",
+        "rationale": item["rationale"] or "",
+    }
+
+    new_title = request.form.get("title", item["title"] or "").strip()
+    new_detail = request.form.get("detail", item["detail"] or "").strip()
+    new_rationale = request.form.get("rationale", item["rationale"] or "").strip()
+
+    if not new_rationale:
+        flash("Item edit requires a non-empty rationale.", "error")
+        return redirect(url_for("member_detail", member_id=member_id))
+
+    with transaction() as conn:
+        conn.execute(
+            """
+            UPDATE plan_items
+            SET title = ?, detail = ?, rationale = ?, provenance = ?
+            WHERE id = ?
+            """,
+            (new_title, new_detail, new_rationale, "admin", item_id),
+        )
+        # Mark version provenance as admin since staff edited content
+        conn.execute(
+            "UPDATE plan_versions SET provenance = 'admin' WHERE id = ?",
+            (version_id,),
+        )
+        after = {
+            "title": new_title,
+            "detail": new_detail,
+            "rationale": new_rationale,
+            "provenance": "admin",
+        }
+        conn.execute(
+            """
+            INSERT INTO plan_reviews (plan_version_id, reviewed_by, action, note, before_json, after_json, created_at)
+            VALUES (?, ?, 'edit', ?, ?, ?, ?)
+            """,
+            (
+                version_id,
+                user["id"],
+                f"Edited item {item_id}: title/detail/rationale",
+                json.dumps(before),
+                json.dumps(after),
+                now,
+            ),
+        )
+
+    flash("Plan item updated.", "good")
+    return redirect(url_for("member_detail", member_id=member_id))
 
 
 @app.route("/members/<int:member_id>/recommendations")
