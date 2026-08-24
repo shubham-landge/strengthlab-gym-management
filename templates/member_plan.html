@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">Circadian Blueprint</p>
+    <h1>My Personal Training & Nutrition Timeline</h1>
+  </div>
+  <div class="actions">
+    <a class="button" href="{{ url_for('member_detail', member_id=member.id) }}">Back to command center</a>
+  </div>
+</header>
+
+{% if not plan or plan.status != 'approved' %}
+<!-- Phase 7 Honest Empty State: Never render draft content to a member -->
+<section class="panel empty-state" style="margin-top: 20px;">
+  <div style="font-size: 3rem; margin-bottom: 8px;">⏳</div>
+  <h2>Your coach is preparing your plan</h2>
+  <p style="max-width: 480px; margin: 0 auto; color: var(--muted);">
+    Your personalized circadian training schedule and nutrition blueprint are currently under review by your fitness coach. Check back soon!
+  </p>
+</section>
+{% else %}
+<!-- Active Approved Plan Timeline -->
+<section class="member-hero" style="margin-bottom: 20px;">
+  <div class="member-hero-main">
+    <p class="eyebrow">Daily Schedule Anchors</p>
+    <h2>{{ member.primary_fitness_goal or member.goal or "General Fitness" }}</h2>
+    <div class="hero-tags">
+      <span>Wake: <strong class="tabular-nums">{{ member.wake_time or "07:00" }}</strong></span>
+      <span>Workout: <strong class="tabular-nums">{{ member.workout_time or "18:00" }}</strong></span>
+      <span>Sleep: <strong class="tabular-nums">{{ member.sleep_time or "23:00" }}</strong></span>
+    </div>
+  </div>
+  <div class="member-hero-side">
+    <span>Approved Version</span>
+    <strong>Active Blueprint</strong>
+    <small>Verified by Coaching Staff</small>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="section-title">
+    <h2>Daily Timeline & Protocol</h2>
+    <small>Every session, meal, and supplement timed to your circadian rhythm.</small>
+  </div>
+
+  <div class="circadian-timeline">
+    {% for item in plan_items %}
+    <div class="timeline-item">
+      <div class="timeline-node"></div>
+      <div class="timeline-content">
+        <!-- Time Node & Type Header -->
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span class="pill tabular-nums" style="font-size: 0.9rem; font-weight: 700; background: var(--accent-soft); color: var(--accent);">
+              {{ item.slot_time }}
+            </span>
+            <h3 style="margin: 0; font-size: 1.05rem; color: var(--ink);">{{ item.title }}</h3>
+          </div>
+
+          <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+            <span class="pill" style="font-size: 0.72rem; text-transform: uppercase;">{{ item.item_type }}</span>
+            
+            {% set prov_label = item.provenance or 'rule' %}
+            {% if prov_label == 'admin' %}{% set prov_label = 'Coach edited' %}{% endif %}
+            <span class="pill" style="font-size: 0.72rem; background: var(--panel-2); color: var(--muted);">
+              {{ prov_label }}
+            </span>
+          </div>
+        </div>
+
+        <!-- Detail Text -->
+        {% if item.detail %}
+        <p style="margin: 0; font-size: 0.92rem; color: var(--ink); font-weight: 500;">{{ item.detail }}</p>
+        {% endif %}
+
+        <!-- Expandable Rationale (Phase 7: visible on demand, not shouting) -->
+        {% if item.rationale %}
+        <details class="rationale-details">
+          <summary>Why this item & timing</summary>
+          <p style="margin: 4px 0 0 0; line-height: 1.4;">{{ item.rationale }}</p>
+        </details>
+        {% endif %}
+
+        <!-- Evidence Grade & Citation -->
+        {% if item.evidence_grade or item.evidence_source %}
+        <div style="font-size: 0.78rem; color: var(--muted); display: flex; align-items: center; gap: 8px; margin-top: 2px;">
+          {% if item.evidence_grade %}
+          <span class="pill good" style="font-size: 0.68rem;">Evidence Grade {{ item.evidence_grade }}</span>
+          {% endif %}
+          {% if item.evidence_source %}
+            <span>Source: 
+              {% if item.source_url %}
+              <a href="{{ item.source_url }}" target="_blank" rel="noopener">{{ item.evidence_source }}</a>
+              {% else %}
+              {{ item.evidence_source }}
+              {% endif %}
+            </span>
+          {% endif %}
+        </div>
+        {% endif %}
+
+      </div>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <p>No items found in this plan timeline.</p>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

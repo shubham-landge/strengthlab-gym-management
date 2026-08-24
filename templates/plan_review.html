@@ -1,0 +1,216 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">Trainer Review Portal</p>
+    <h1>Review Plan: {{ member.name }}</h1>
+  </div>
+  <div class="actions">
+    <a class="button" href="{{ url_for('member_detail', member_id=member.id) }}">Back to Member Profile</a>
+  </div>
+</header>
+
+<!-- Biometric & Circadian Anchors Hero -->
+<section class="member-hero" style="margin-bottom: 20px;">
+  <div class="member-hero-main">
+    <p class="eyebrow">Circadian & Biometric Summary</p>
+    <h2>{{ member.primary_fitness_goal or member.goal or "General Fitness" }}</h2>
+    <div class="hero-tags">
+      <span>Wake: <strong class="tabular-nums">{{ member.wake_time or "07:00 (Default)" }}</strong></span>
+      <span>Workout: <strong class="tabular-nums">{{ member.workout_time or "18:00 (Default)" }}</strong></span>
+      <span>Sleep: <strong class="tabular-nums">{{ member.sleep_time or "23:00 (Default)" }}</strong></span>
+      <span>{{ member.dietary_style or "Standard Diet" }}</span>
+    </div>
+  </div>
+  <div class="member-hero-side">
+    <span>Plan Status</span>
+    <strong>{{ plan.status|replace('_', ' ')|title if plan else "No Plan" }}</strong>
+    {% if plan and plan.provenance %}
+    <small>Provenance: {{ plan.provenance }}</small>
+    {% endif %}
+  </div>
+</section>
+
+<!-- Blocked Plan Warning Banner (Phase 5 Non-Negotiable: Render NO approve control at all) -->
+{% if plan and (plan.status == 'blocked' or plan.blocked_reason) %}
+<section class="blocked-plan-banner" id="blocked-plan-notice">
+  <div style="display:flex; align-items:center; gap:10px;">
+    <span style="font-size:1.5rem;">🛑</span>
+    <div>
+      <h3 style="margin:0; font-size:1.1rem; color:var(--bad-text);">Plan Blocked — Clinical Safety Gate Fired</h3>
+      <p style="margin:4px 0 0 0; font-weight:600;">Reason: {{ plan.blocked_reason }}</p>
+    </div>
+  </div>
+  <hr style="border:0; border-top:1px solid var(--bad); opacity:0.3; margin:8px 0;">
+  <p style="margin:0; font-size:0.9rem;">
+    <strong>What clears this block:</strong> Clinical blocks cannot be overridden by staff or admins. Update the health questionnaire if condition was recorded in error, or refer member to a clinician. Regenerating after updating profile will re-test the gate.
+  </p>
+</section>
+{% endif %}
+
+<!-- Plan Approval Action Header (Only rendered when plan is NOT blocked) -->
+{% if plan and not plan.blocked_reason and plan.status in ['draft', 'pending_review'] %}
+<section class="panel" style="margin-bottom: 20px; background: var(--panel-2); display: flex; justify-content: space-between; align-items: center;">
+  <div>
+    <h3 style="margin: 0;">Plan Ready for Approval</h3>
+    <small style="color: var(--muted);">Review items below before publishing to member portal.</small>
+  </div>
+  <div>
+    <form method="post" action="{{ url_for('approve_plan_route', plan_id=plan.id) if false else '#' }}" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="approve_all">
+      <button class="button primary" type="submit">Approve & Publish Plan</button>
+    </form>
+  </div>
+</section>
+{% endif %}
+
+<!-- Plan Items Grouped by Day -->
+<section class="panel">
+  <div class="section-title">
+    <h2>Structured Plan Items</h2>
+    <small>Every item includes timing rationale, confidence level, and clinical evidence grade.</small>
+  </div>
+
+  {% if plan_items %}
+  <div style="display: flex; flex-direction: column; gap: 24px; margin-top: 15px;">
+    {% for day_label, items in items_by_day.items() %}
+    <div style="border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; background: var(--panel-2);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; border-bottom: 1px solid var(--line); padding-bottom: 10px;">
+        <h3 style="margin: 0; font-size: 1.1rem; color: var(--ink);">{{ day_label }}</h3>
+        {% if not plan.blocked_reason and plan.status in ['draft', 'pending_review'] %}
+        <form method="post" action="#" style="margin: 0;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="approve_day">
+          <input type="hidden" name="day_label" value="{{ day_label }}">
+          <button class="button" style="padding: 4px 10px; font-size: 0.78rem;" type="submit">Approve Day</button>
+        </form>
+        {% endif %}
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 12px;">
+        {% for item in items %}
+        <div class="recommendation-card" style="background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 14px; display: flex; flex-direction: column; gap: 8px;">
+          <!-- Item Header & Badges -->
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="pill tabular-nums" style="font-weight: 700; background: var(--accent-soft); color: var(--accent);">
+                {{ item.slot_time }}
+              </span>
+              <h4 style="margin: 0; font-size: 1rem; color: var(--ink);">{{ item.title }}</h4>
+            </div>
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+              <span class="pill" style="font-size: 0.72rem; text-transform: uppercase;">{{ item.item_type }}</span>
+              <span class="pill {% if item.confidence == 'High' %}good{% elif item.confidence == 'Medium' %}warn{% else %}bad{% endif %}" style="font-size: 0.72rem;">
+                Confidence: {{ item.confidence }}
+              </span>
+              <span class="pill" style="font-size: 0.72rem; background: var(--panel-2); color: var(--muted);">
+                Provenance: {{ item.provenance or 'rule' }}
+              </span>
+            </div>
+          </div>
+
+          <!-- Detail & Rationale -->
+          {% if item.detail %}
+          <p style="margin: 0; font-size: 0.9rem; color: var(--ink); font-weight: 500;">{{ item.detail }}</p>
+          {% endif %}
+
+          <div style="background: var(--panel-2); padding: 8px 12px; border-radius: var(--radius-sm); font-size: 0.85rem; border-left: 3px solid var(--accent);">
+            <strong style="color: var(--accent); font-size: 0.75rem; text-transform: uppercase; display: block; margin-bottom: 2px;">Item Rationale</strong>
+            <p style="margin: 0; color: var(--card-text);">{{ item.rationale }}</p>
+          </div>
+
+          <!-- Evidence Grade & Source Link -->
+          {% if item.evidence_grade or item.evidence_source %}
+          <div style="font-size: 0.8rem; color: var(--muted); display: flex; align-items: center; gap: 8px;">
+            {% if item.evidence_grade %}
+            <span class="pill good" style="font-size: 0.7rem;">Grade {{ item.evidence_grade }}</span>
+            {% endif %}
+            {% if item.evidence_source %}
+              <span>Source: 
+                {% if item.source_url %}
+                <a href="{{ item.source_url }}" target="_blank" style="text-decoration: underline;">{{ item.evidence_source }}</a>
+                {% else %}
+                {{ item.evidence_source }}
+                {% endif %}
+              </span>
+            {% endif %}
+          </div>
+          {% endif %}
+
+          <!-- Inline Edit Button (Triggers Edit Modal) -->
+          <div style="margin-top: 4px; display: flex; justify-content: flex-end;">
+            <a href="#edit-plan-item-{{ item.id }}" class="button" style="padding: 4px 10px; font-size: 0.75rem;">Edit Item</a>
+          </div>
+
+          <!-- Edit Modal Overlay -->
+          <div id="edit-plan-item-{{ item.id }}" class="modal-overlay">
+            <div class="modal-content panel" style="max-width: 550px;">
+              <h3>Edit Plan Item ( provenance → admin )</h3>
+              <form class="grid-form" method="post" action="#">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="action" value="edit_item">
+                <input type="hidden" name="item_id" value="{{ item.id }}">
+
+                <label>Title<input name="title" value="{{ item.title }}" required></label>
+                <label>Slot Time (HH:MM)<input name="slot_time" class="tabular-nums" value="{{ item.slot_time }}" required></label>
+                <label>Detail (Sets/reps/macros)<input name="detail" value="{{ item.detail or '' }}"></label>
+                <label>Rationale (Mandatory non-empty explanation)<textarea name="rationale" rows="3" required>{{ item.rationale }}</textarea></label>
+                <label>Evidence Grade
+                  <select name="evidence_grade">
+                    <option value="" {% if not item.evidence_grade %}selected{% endif %}>None</option>
+                    <option value="A" {% if item.evidence_grade == 'A' %}selected{% endif %}>A — High Certainty</option>
+                    <option value="B" {% if item.evidence_grade == 'B' %}selected{% endif %}>B — Moderate Certainty</option>
+                    <option value="C" {% if item.evidence_grade == 'C' %}selected{% endif %}>C — Low Certainty</option>
+                    <option value="D" {% if item.evidence_grade == 'D' %}selected{% endif %}>D — Very Low</option>
+                  </select>
+                </label>
+                <label>Evidence Source<input name="evidence_source" value="{{ item.evidence_source or '' }}"></label>
+                <label>Source URL<input name="source_url" type="url" value="{{ item.source_url or '' }}"></label>
+
+                <div style="margin-top: 15px; display: flex; gap: 10px;">
+                  <button class="button primary" type="submit">Save Changes</button>
+                  <a href="#" class="button">Cancel</a>
+                </div>
+              </form>
+            </div>
+          </div>
+
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <div style="font-size: 2rem;">📋</div>
+    <p>No plan generated for this member yet.</p>
+  </div>
+  {% endif %}
+</section>
+
+<style>
+.modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(2px);
+  z-index: 1000;
+  justify-content: center;
+  align-items: center;
+}
+.modal-overlay:target {
+  display: flex;
+}
+.modal-content {
+  width: 90%;
+  max-width: 550px;
+  padding: 24px;
+  border-radius: var(--radius);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+</style>
+{% endblock %}
