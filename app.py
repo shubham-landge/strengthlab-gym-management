@@ -12,7 +12,7 @@ import time
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from flask import Flask, abort, g, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, flash, g, has_request_context, redirect, render_template, request, send_file, session, url_for
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from openpyxl import Workbook
@@ -63,6 +63,7 @@ PAYMENT_REMINDER_INTERVAL_SECONDS = int(os.environ.get("PAYMENT_REMINDER_INTERVA
 # Stop chasing a lapsed membership after this many days, so long-gone members do
 # not receive a WhatsApp reminder every single day forever.
 OVERDUE_REMINDER_WINDOW_DAYS = int(os.environ.get("OVERDUE_REMINDER_WINDOW_DAYS", "30"))
+RESET_TOKEN_HOURS = int(os.environ.get("RESET_TOKEN_HOURS", "24"))
 _payment_automation_started = False
 _payment_automation_lock = threading.Lock()
 _startup_ready = False
@@ -724,6 +725,43 @@ def query_one(query, params=()):
     return db().execute(query, params).fetchone()
 
 
+def _migrate_legacy_plans(cursor):
+    """Copy existing members.workout_plan / diet_plan text into plan_versions.
+
+    One approved admin version per member and plan type, with a single plan_item
+    carrying the original text. Keeps the old columns readable for this release.
+    """
+    members = cursor.execute(
+        "SELECT id, workout_plan, diet_plan FROM members WHERE COALESCE(workout_plan, '') != '' OR COALESCE(diet_plan, '') != ''"
+    ).fetchall()
+    for member_id, workout_plan, diet_plan in members:
+        for plan_type, plan_text in (("workout", workout_plan), ("diet", diet_plan)):
+            if not plan_text or not plan_text.strip():
+                continue
+            existing = cursor.execute(
+                "SELECT 1 FROM plan_versions WHERE member_id = ? AND plan_type = ? AND status = 'approved' LIMIT 1",
+                (member_id, plan_type),
+            ).fetchone()
+            if existing:
+                continue
+            cursor.execute(
+                """
+                INSERT INTO plan_versions (member_id, plan_type, status, provenance, generated_at)
+                VALUES (?, ?, 'approved', 'admin', ?)
+                """,
+                (member_id, plan_type, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            version_id = cursor.lastrowid
+            item_type = "exercise" if plan_type == "workout" else "meal"
+            cursor.execute(
+                """
+                INSERT INTO plan_items (plan_version_id, day_label, item_type, title, detail, rationale, position)
+                VALUES (?, 'Legacy plan', ?, 'Legacy plan', ?, ?, 0)
+                """,
+                (version_id, item_type, plan_text, f"Migrated from members.{plan_type}_plan."),
+            )
+
+
 def init_db():
     connection = sqlite3.connect(DB_PATH)
     cursor = connection.cursor()
@@ -1008,6 +1046,53 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(member_id) REFERENCES members(id)
         );
+
+        CREATE TABLE IF NOT EXISTS plan_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            member_id INTEGER NOT NULL,
+            plan_type TEXT NOT NULL CHECK(plan_type IN ('workout', 'diet')),
+            status TEXT NOT NULL CHECK(status IN ('draft', 'pending_review', 'approved', 'rejected', 'superseded', 'blocked')),
+            provenance TEXT CHECK(provenance IN ('rule', 'ai', 'admin')),
+            model TEXT,
+            blocked_reason TEXT,
+            generated_at TEXT,
+            reviewed_by INTEGER,
+            reviewed_at TEXT,
+            review_note TEXT,
+            FOREIGN KEY(member_id) REFERENCES members(id) ON DELETE CASCADE,
+            FOREIGN KEY(reviewed_by) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS plan_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_version_id INTEGER NOT NULL,
+            day_label TEXT,
+            slot_time TEXT,
+            item_type TEXT CHECK(item_type IN ('exercise', 'meal', 'hydration', 'supplement', 'recovery')),
+            title TEXT,
+            detail TEXT,
+            rationale TEXT NOT NULL,
+            evidence_grade TEXT,
+            evidence_source TEXT,
+            source_url TEXT,
+            confidence TEXT,
+            position INTEGER,
+            provenance TEXT CHECK(provenance IN ('rule', 'ai', 'admin')),
+            FOREIGN KEY(plan_version_id) REFERENCES plan_versions(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS plan_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_version_id INTEGER NOT NULL,
+            reviewed_by INTEGER,
+            action TEXT NOT NULL CHECK(action IN ('approve', 'reject', 'edit')),
+            note TEXT,
+            before_json TEXT,
+            after_json TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(plan_version_id) REFERENCES plan_versions(id) ON DELETE CASCADE,
+            FOREIGN KEY(reviewed_by) REFERENCES users(id)
+        );
         """
     )
 
@@ -1059,6 +1144,9 @@ def init_db():
         "supplements": "TEXT",
         "workout_subscription": "TEXT DEFAULT 'Regular'",
         "diet_subscription": "TEXT DEFAULT 'None'",
+        "wake_time": "TEXT",
+        "sleep_time": "TEXT",
+        "workout_time": "TEXT",
     }
     for column, column_type in extra_member_columns.items():
         if column not in member_columns:
@@ -1122,6 +1210,51 @@ def init_db():
         ON notifications (event_key) WHERE event_key IS NOT NULL
         """
     )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_plan_versions_member_type_status
+        ON plan_versions (member_id, plan_type, status)
+        """
+    )
+
+    # Exactly one approved version may be live per member and plan type. Repeated
+    # migrations left some members with several, so older ones are retired before
+    # the unique index is created - otherwise the index creation itself fails and
+    # the migration is stuck. approve_plan_version() supersedes the prior version
+    # before promoting the new one inside one transaction, so the index never
+    # fires during a normal approval.
+    stale_approved = cursor.execute(
+        """
+        SELECT id FROM plan_versions
+        WHERE status = 'approved' AND id NOT IN (
+            SELECT MAX(id) FROM plan_versions WHERE status = 'approved'
+            GROUP BY member_id, plan_type
+        )
+        """
+    ).fetchall()
+    for (version_id,) in stale_approved:
+        cursor.execute(
+            "UPDATE plan_versions SET status = 'superseded' WHERE id = ?",
+            (version_id,),
+        )
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_versions_one_approved
+        ON plan_versions (member_id, plan_type) WHERE status = 'approved'
+        """
+    )
+
+    plan_item_columns = {row[1] for row in cursor.execute("PRAGMA table_info(plan_items)").fetchall()}
+    if "provenance" not in plan_item_columns:
+        cursor.execute(
+            "ALTER TABLE plan_items ADD COLUMN provenance TEXT CHECK(provenance IN ('rule', 'ai', 'admin'))"
+        )
+
+    # Migrate legacy plan text into approved admin plan versions so nobody loses
+    # a plan on upgrade. Idempotent: skip members who already have an approved
+    # version for the plan type.
+    _migrate_legacy_plans(cursor)
 
     user_columns = {row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()}
     if "must_change_password" not in user_columns:
@@ -1350,7 +1483,14 @@ def split_env_values(*names, default=None):
             if item:
                 values.append(item)
     if not values and default:
-        values = [default]
+        # The default goes through the same splitting as a real value. Returning
+        # it whole meant a default like "openai,gemini" arrived as one unsplit
+        # string, matched no provider, and silently disabled AI generation
+        # whenever AI_PROVIDER_ORDER was not set explicitly.
+        for item in str(default).replace("\n", ",").replace(";", ",").split(","):
+            item = item.strip()
+            if item:
+                values.append(item)
     return values
 
 
@@ -1566,42 +1706,82 @@ def recipe_cards(member, calories, protein, carbs, fat):
     ]
 
 
-def generate_rule_based_plans(member):
-    goal = member_text(member, "primary_fitness_goal") or member_text(member, "goal", "general fitness")
-    level = member_text(member, "fitness_level", "Beginner")
-    injury_text = member_text(member, "injury_notes")
-    premium = bool(member["premium"])
-    blueprint = workout_blueprint(level, goal, injury_text)
-    available = ", ".join(equipment_names())
+def _persist_structured_plan(member_id, plan_type, items, provenance="rule", model=None, status="draft", blocked_reason=None, conn=None):
+    """Insert a plan_version and its plan_items. Does not touch approved rows.
 
-    workout_lines = [
+    When ``conn`` is provided, statements are run against it so callers can
+    group workout and diet persistence into a single transaction.  When
+    ``conn`` is omitted a fresh transaction is used.
+    """
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    own_txn = conn is None
+    if own_txn:
+        conn = db()
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO plan_versions (member_id, plan_type, status, provenance, model, generated_at, blocked_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (member_id, plan_type, status, provenance, model, generated_at, blocked_reason),
+        )
+        version_id = cursor.lastrowid
+        for pos, item in enumerate(items):
+            conn.execute(
+                """
+                INSERT INTO plan_items (
+                    plan_version_id, day_label, slot_time, item_type, title, detail,
+                    rationale, evidence_grade, evidence_source, source_url, confidence, position
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    version_id,
+                    item.get("day_label"),
+                    item.get("slot_time"),
+                    item.get("item_type"),
+                    item.get("title"),
+                    item.get("detail"),
+                    item.get("rationale", ""),
+                    item.get("evidence_grade"),
+                    item.get("evidence_source"),
+                    item.get("source_url"),
+                    item.get("confidence"),
+                    item.get("position", pos),
+                ),
+            )
+        if own_txn:
+            conn.commit()
+        return version_id
+    except Exception:
+        if own_txn:
+            conn.rollback()
+        raise
+
+
+def _build_workout_text(member, blueprint, available, items):
+    lines = [
         "STRENGTHLAB TRAINING BLUEPRINT",
-        f"Goal: {goal}",
-        f"Level: {level}",
+        f"Goal: {member_text(member, 'primary_fitness_goal') or member_text(member, 'goal', 'general fitness')}",
+        f"Level: {member_text(member, 'fitness_level', 'Beginner')}",
         f"Split: {blueprint['split']} | Weekly frequency: {blueprint['days']} days",
         f"Intensity: {blueprint['rpe']} | Default rest: {blueprint['rest']}",
         "",
-        "Global warm-up: 5-8 min treadmill or cycle, then shoulder circles, hip openers, knee/ankle prep, and one light warm-up set.",
     ]
-    for title, exercises in session_templates(blueprint["split"]):
-        workout_lines.extend(
-            [
-                "",
-                title,
-                "Warm-up: easy treadmill/cycle 5 min + movement-specific ramp set.",
-                "Main work:",
-            ]
-        )
-        for exercise in exercises:
-            workout_lines.append(f"- {exercise}: {blueprint['sets']} sets x {blueprint['reps']} reps, {blueprint['rpe']}, rest {blueprint['rest']}.")
-        workout_lines.extend(
-            [
-                f"Conditioning: {blueprint['conditioning']}",
-                "Cool-down: 4-6 min slow walk/cycle, hamstring stretch, chest stretch, breathing reset.",
-                "Coach notes: keep form clean before loading; record load/reps after every session.",
-            ]
-        )
-    workout_lines.extend(
+    current_day = None
+    for item in sorted(items, key=lambda x: (x.get("day_label", ""), x.get("position", 0))):
+        day = item.get("day_label", "")
+        if day != current_day:
+            lines.append("")
+            lines.append(day)
+            current_day = day
+        lines.append(f"- {item['title']}: {item['detail']}")
+        lines.append(f"  Rationale: {item['rationale']}")
+        if item.get("confidence"):
+            lines.append(f"  Confidence: {item['confidence']}")
+        if item.get("slot_time"):
+            lines.append(f"  Time: {item['slot_time']}")
+    lines.extend(
         [
             "",
             f"Progression: {blueprint['progression']}",
@@ -1609,43 +1789,242 @@ def generate_rule_based_plans(member):
             f"Safety: {blueprint['safety']}",
         ]
     )
-    if premium:
-        workout_lines.append("Premium review: admin/trainer should review execution weekly and adjust volume or exercise selection.")
+    if bool(member["premium"]):
+        lines.append("Premium review: admin/trainer should review execution weekly and adjust volume or exercise selection.")
+    return "\n".join(lines)
 
-    calories, protein, carbs, fat = nutrition_targets(member, goal)
-    food_preference = member_text(member, "food_preference", "balanced local meals")
-    diet_lines = [
+
+def _build_diet_text(member, calories, protein, carbs, fat, food_preference, items):
+    lines = [
         "STRENGTHLAB NUTRITION BLUEPRINT",
-        f"Goal: {goal}",
+        f"Goal: {member_text(member, 'primary_fitness_goal') or member_text(member, 'goal', 'general fitness')}",
         f"Food preference: {food_preference}",
         f"Daily targets: {calories} kcal, protein {protein} g, carbs {carbs} g, fat {fat} g.",
-        "Meal timing: keep 3 main meals plus 1 snack unless the member prefers fewer meals.",
-        "Hydration: 35-45 ml water per kg body weight; add electrolytes after heavy sweat sessions.",
-        "Restriction rule: avoid listed allergies/exclusions first, then adjust protein source.",
         "",
-        "Recipe cards:",
     ]
-    for index, recipe in enumerate(recipe_cards(member, calories, protein, carbs, fat), start=1):
-        diet_lines.extend(
-            [
-                "",
-                f"{index}. {recipe['title']}",
-                f"Ingredients: {recipe['ingredients']}",
-                f"Steps: {recipe['steps']}",
-                f"Macros: {recipe['macros']}",
-            ]
-        )
-    diet_lines.extend(
+    for item in sorted(items, key=lambda x: x.get("slot_time", "")):
+        lines.append(f"- {item['title']}: {item['detail']}")
+        lines.append(f"  Rationale: {item['rationale']}")
+        if item.get("confidence"):
+            lines.append(f"  Confidence: {item['confidence']}")
+        if item.get("slot_time"):
+            lines.append(f"  Time: {item['slot_time']}")
+    lines.extend(
         [
             "",
             "Weekly adjustment: if weight is not moving for 2 weeks, adjust daily calories by 150-200 based on the goal.",
-            f"Safety: {blueprint['safety']} Nutrition guidance is educational and not medical treatment.",
+            "Safety: Nutrition guidance is educational and not medical treatment.",
         ]
     )
-    if premium:
-        diet_lines.append("Premium review: admin can add one flexible restaurant meal and a Sunday prep list.")
+    if bool(member["premium"]):
+        lines.append("Premium review: admin can add one flexible restaurant meal and a Sunday prep list.")
+    return "\n".join(lines)
 
-    return "\n".join(workout_lines), "\n".join(diet_lines)
+
+def generate_rule_based_plans(member):
+    from services import circadian_service
+    from services.clinical_recommendation_service import get_or_create_health_profile
+    from services.supplement_recommendation_service import plan_safety_gate
+
+    member_id = member["id"]
+    goal = member_text(member, "primary_fitness_goal") or member_text(member, "goal", "general fitness")
+    level = member_text(member, "fitness_level", "Beginner")
+    injury_text = member_text(member, "injury_notes")
+    premium = bool(member["premium"])
+    blueprint = workout_blueprint(level, goal, injury_text)
+    available = ", ".join(equipment_names())
+    calories, protein, carbs, fat = nutrition_targets(member, goal)
+    food_preference = member_text(member, "food_preference", "balanced local meals")
+
+    wake = member_text(member, "wake_time") or None
+    workout_time = member_text(member, "workout_time") or None
+    sleep = member_text(member, "sleep_time") or None
+    slots = circadian_service.build_day_slots(wake, workout_time, sleep)
+
+    # --- safety gate ----------------------------------------------------------
+    health_profile = get_or_create_health_profile(db(), member_id)
+    safety_warnings = plan_safety_gate(member, health_profile)
+    blocked_reason = "\n".join(safety_warnings) if safety_warnings else None
+    plan_status = "blocked" if safety_warnings else "draft"
+
+    # --- workout items --------------------------------------------------------
+    workout_items = []
+    day_templates = session_templates(blueprint["split"])
+
+    for day_label, exercises in day_templates:
+        training_slot = next(
+            (s for s in slots if s["purpose"] == "Training"),
+            {"slot_time": "18:00", "item_type": "exercise", "purpose": "Training", "rationale": "Default training slot.", "confidence": "Low"},
+        )
+
+        # Warm-up
+        wake_slot = next((s for s in slots if s["purpose"] == "Wake"), None)
+        if wake_slot and "Early session" in training_slot.get("rationale", ""):
+            warm_rationale = (
+                f"Extended warm-up: core temperature is lowest on waking at {wake_slot['slot_time']}, "
+                "so add 5–10 min of general movement before ramp sets."
+            )
+        else:
+            warm_rationale = f"Prepare joints and raise core temperature before loading for {day_label} at {level} level."
+        workout_items.append({
+            "day_label": day_label,
+            "slot_time": training_slot["slot_time"],
+            "item_type": "recovery",
+            "title": "Warm-up",
+            "detail": "5-8 min treadmill or cycle, shoulder circles, hip openers, knee/ankle prep, one light warm-up set.",
+            "rationale": warm_rationale,
+            "confidence": "High",
+            "position": 0,
+        })
+
+        # Main exercises
+        for pos, exercise in enumerate(exercises, start=1):
+            detail = f"{blueprint['sets']} sets x {blueprint['reps']} reps, {blueprint['rpe']}, rest {blueprint['rest']}."
+            rationale = f"Primary movement for {day_label.split('·')[-1].strip() if '·' in day_label else day_label}. Selected for goal '{goal}' at {level} level. "
+            if injury_text and injury_text.lower() not in {"none", "no", "na"}:
+                rationale += f"Modified around injury note: {injury_text}. Use pain-free range and trainer clearance."
+            else:
+                rationale += "Pain-free range of motion required; stop if joint pain appears."
+            workout_items.append({
+                "day_label": day_label,
+                "slot_time": training_slot["slot_time"],
+                "item_type": "exercise",
+                "title": exercise,
+                "detail": detail,
+                "rationale": rationale,
+                "confidence": "High",
+                "position": pos,
+            })
+
+        # Conditioning
+        cond_pos = len(exercises) + 1
+        cond_rationale = f"Matched to goal '{goal}' and {level} capacity. {blueprint['conditioning']}"
+        if injury_text and injury_text.lower() not in {"none", "no", "na"}:
+            cond_rationale += f" Modified around injury note: {injury_text}."
+        workout_items.append({
+            "day_label": day_label,
+            "slot_time": training_slot["slot_time"],
+            "item_type": "exercise",
+            "title": "Conditioning",
+            "detail": blueprint["conditioning"],
+            "rationale": cond_rationale,
+            "confidence": "High",
+            "position": cond_pos,
+        })
+
+        # Cool-down
+        cooldown_rationale = f"Down-regulate sympathetic tone after {day_label} at {level} level and begin recovery before leaving the gym."
+        if injury_text and injury_text.lower() not in {"none", "no", "na"}:
+            cooldown_rationale += f" Respect injury note: {injury_text} during stretching."
+        workout_items.append({
+            "day_label": day_label,
+            "slot_time": training_slot["slot_time"],
+            "item_type": "recovery",
+            "title": "Cool-down",
+            "detail": "4-6 min slow walk/cycle, hamstring stretch, chest stretch, breathing reset.",
+            "rationale": cooldown_rationale,
+            "confidence": "High",
+            "position": cond_pos + 1,
+        })
+
+        # Late-training wind-down
+        wind_slot = next((s for s in slots if s["purpose"] == "Wind-down"), None)
+        if wind_slot:
+            workout_items.append({
+                "day_label": day_label,
+                "slot_time": wind_slot["slot_time"],
+                "item_type": "recovery",
+                "title": "Wind-down",
+                "detail": "10 min nasal breathing, light hamstring/hip flexor stretch, dim lights.",
+                "rationale": wind_slot["rationale"],
+                "confidence": "High",
+                "position": cond_pos + 2,
+            })
+
+        # Short-sleep flag
+        if any("below 7-hour floor" in s.get("rationale", "") for s in slots):
+            sleep_slot = next((s for s in slots if s["purpose"] == "Sleep"), None)
+            workout_items.append({
+                "day_label": day_label,
+                "slot_time": sleep_slot["slot_time"] if sleep_slot else sleep,
+                "item_type": "recovery",
+                "title": "Sleep priority",
+                "detail": f"Target {sleep_slot['slot_time'] if sleep_slot else sleep} bedtime. Volume reduced ~20% because sleep window is under 7 hours.",
+                "rationale": "Short sleep window flagged by circadian rule: sleep < 7 h triggers volume reduction for recovery safety.",
+                "confidence": "High",
+                "position": cond_pos + 3,
+            })
+
+    # --- diet items -----------------------------------------------------------
+    diet_items = []
+    day_label = "Every day"
+    recipes = recipe_cards(member, calories, protein, carbs, fat)
+    recipe_map = {}
+    if recipes:
+        recipe_map["Breakfast"] = recipes[0]
+    if len(recipes) > 2:
+        recipe_map["Pre-workout meal"] = recipes[2]
+        recipe_map["Post-workout"] = recipes[2]
+    if len(recipes) > 3:
+        recipe_map["Last meal"] = recipes[3]
+    recipe_map["Pre-workout light carb"] = {
+        "title": "Light carb top-up",
+        "ingredients": "Banana 1 or rice cakes 2 with honey.",
+        "macros": f"~{round(calories * 0.05)} kcal, quick carbs.",
+    }
+
+    for slot in slots:
+        purpose = slot["purpose"]
+        if purpose in ("Wake", "Sleep", "Training", "Wind-down"):
+            continue
+
+        recipe = recipe_map.get(purpose)
+        if purpose == "Morning hydration":
+            diet_items.append({
+                "day_label": day_label,
+                "slot_time": slot["slot_time"],
+                "item_type": "hydration",
+                "title": "Morning hydration",
+                "detail": "300–500 ml water. Add electrolytes after heavy sweat sessions.",
+                "rationale": slot["rationale"],
+                "confidence": slot.get("confidence", "High"),
+                "position": len(diet_items),
+            })
+        elif purpose == "Caffeine cut-off":
+            diet_items.append({
+                "day_label": day_label,
+                "slot_time": slot["slot_time"],
+                "item_type": "supplement",
+                "title": "Caffeine cut-off",
+                "detail": "No caffeine after this time.",
+                "rationale": slot["rationale"],
+                "confidence": slot.get("confidence", "High"),
+                "position": len(diet_items),
+            })
+        elif recipe:
+            diet_items.append({
+                "day_label": day_label,
+                "slot_time": slot["slot_time"],
+                "item_type": "meal",
+                "title": recipe["title"],
+                "detail": f"Ingredients: {recipe['ingredients']}. Macros: {recipe['macros']}",
+                "rationale": (
+                    f"{slot['rationale']} Food preference: {food_preference}. "
+                    f"Daily target: {calories} kcal, protein {protein} g."
+                ),
+                "confidence": slot.get("confidence", "High"),
+                "position": len(diet_items),
+            })
+
+    # --- persist structured data (atomic for both plan types) -----------------
+    with transaction() as conn:
+        _persist_structured_plan(member_id, "workout", workout_items, provenance="rule", status=plan_status, blocked_reason=blocked_reason, conn=conn)
+        _persist_structured_plan(member_id, "diet", diet_items, provenance="rule", status=plan_status, blocked_reason=blocked_reason, conn=conn)
+
+    # --- legacy text for backward compatibility -------------------------------
+    workout_text = _build_workout_text(member, blueprint, available, workout_items)
+    diet_text = _build_diet_text(member, calories, protein, carbs, fat, food_preference, diet_items)
+    return workout_text, diet_text
 
 
 def apply_customization_notes(plan_text, customizations):
@@ -1660,30 +2039,44 @@ def service_level(member, field_name, default="Regular"):
     return value
 
 
+def _preview_field(form, member, key):
+    """Return the submitted value when the key is present, else the stored value.
+
+    Using ``form.get(key) or member[key]`` hides explicitly cleared fields
+    because an empty string is falsy.  This helper preserves the clear.
+    """
+    if key in form:
+        return form.get(key)
+    return member[key]
+
+
 def member_preview_from_form(member, form):
     preview = dict(member)
     preview.update(
         {
-            "name": form.get("name") or member["name"],
-            "phone": form.get("phone") or member["phone"],
-            "email": form.get("email") or member["email"],
-            "age": form.get("age") or member["age"],
-            "gender": form.get("gender") or member["gender"],
-            "height_cm": form.get("height_cm") or member["height_cm"],
-            "weight_kg": form.get("weight_kg") or member["weight_kg"],
-            "goal": form.get("goal") or member["goal"],
-            "fitness_level": form.get("fitness_level") or member["fitness_level"],
-            "food_preference": form.get("food_preference") or member["food_preference"],
-            "medical_notes": form.get("medical_notes") or member["medical_notes"],
-            "injury_notes": form.get("injury_notes") or member["injury_notes"],
-            "plan_name": form.get("plan_name") or member["plan_name"],
+            "name": _preview_field(form, member, "name"),
+            "phone": _preview_field(form, member, "phone"),
+            "email": _preview_field(form, member, "email"),
+            "age": _preview_field(form, member, "age"),
+            "gender": _preview_field(form, member, "gender"),
+            "height_cm": _preview_field(form, member, "height_cm"),
+            "weight_kg": _preview_field(form, member, "weight_kg"),
+            "goal": _preview_field(form, member, "goal"),
+            "fitness_level": _preview_field(form, member, "fitness_level"),
+            "food_preference": _preview_field(form, member, "food_preference"),
+            "medical_notes": _preview_field(form, member, "medical_notes"),
+            "injury_notes": _preview_field(form, member, "injury_notes"),
+            "plan_name": _preview_field(form, member, "plan_name"),
             "workout_subscription": form.get("workout_subscription") or service_level(member, "workout_subscription"),
             "diet_subscription": form.get("diet_subscription") or service_level(member, "diet_subscription", "None"),
             "premium": 1
             if form.get("workout_subscription") == "Premium" or form.get("diet_subscription") == "Premium"
             else member["premium"],
-            "workout_plan": form.get("workout_plan") or member["workout_plan"],
-            "diet_plan": form.get("diet_plan") or member["diet_plan"],
+            "workout_plan": _preview_field(form, member, "workout_plan"),
+            "diet_plan": _preview_field(form, member, "diet_plan"),
+            "wake_time": _preview_field(form, member, "wake_time"),
+            "sleep_time": _preview_field(form, member, "sleep_time"),
+            "workout_time": _preview_field(form, member, "workout_time"),
         }
     )
     return preview
@@ -1711,7 +2104,6 @@ def generate_plan_draft(member, plan_type, customizations=None):
 
 def member_ai_payload(member):
     return {
-        "name": member["name"],
         "age": member["age"],
         "gender": member["gender"],
         "height_cm": member["height_cm"],
@@ -1745,36 +2137,251 @@ def equipment_names():
 
 
 def ai_plan_prompt(member, customizations=None, plan_type="both"):
+    from services import circadian_service
+
+    wake = member_text(member, "wake_time") or None
+    workout_time = member_text(member, "workout_time") or None
+    sleep = member_text(member, "sleep_time") or None
+    slots = circadian_service.build_day_slots(wake, workout_time, sleep)
+
+    item_schema = {
+        "slot_time": "HH:MM from circadian_slots",
+        "item_type": "exercise | meal | hydration | supplement | recovery",
+        "title": "string",
+        "detail": "string",
+        "rationale": "string (minimum 40 characters)",
+        "evidence": {"grade": "A|B|C|D", "source": "string", "url": "string (optional)"},
+        "confidence": "High | Medium | Low",
+    }
+    day_schema = {"day_label": "string", "items": [item_schema]}
+
+    response_schema = {}
+    if plan_type in ("both", "workout"):
+        response_schema["workout"] = {"plan_type": "workout", "days": [day_schema]}
+    if plan_type in ("both", "diet"):
+        response_schema["diet"] = {"plan_type": "diet", "days": [day_schema]}
+
     return {
-        "task": "Create a safe, practical gym workout plan and diet plan for this member.",
+        "task": "Create a safe, practical gym plan for this member.",
         "requested_plan_type": plan_type,
         "member": member_ai_payload(member),
+        "circadian_slots": [
+            {"slot_time": s["slot_time"], "purpose": s["purpose"], "rationale": s["rationale"]}
+            for s in slots
+        ],
         "available_gym_equipment": equipment_names(),
         "admin_customizations": customizations or [],
         "requirements": [
-            "Return only valid JSON with keys workout_plan, diet_plan, progress_message, safety_notes.",
-            "Workout plan should be 5-6 clear training days with sets/reps/intensity and trainer-friendly notes.",
-            "Workout exercises must be selected from the available gym equipment whenever possible.",
-            "Diet plan should match food preference, Indian/local meal patterns when appropriate, hydration, and premium add-ons if premium is true.",
-            "Respect medical and injury notes. Do not diagnose, treat disease, or override medical advice.",
-            "Use concise plain text strings. No Markdown tables.",
+            "Return only valid JSON matching the schema below.",
+            "Every item MUST include a non-empty 'rationale' of at least 40 characters "
+            "explaining why THIS item suits THIS member, referencing their goal, "
+            "experience, injuries, or schedule.",
+            "Place items at the supplied slot times. Do not invent times.",
+            "Exercises must come from available_gym_equipment.",
+            "Cite an evidence grade and source where a nutrition claim is made.",
+            "Do not diagnose, treat disease, or override medical advice.",
         ],
+        "response_schema": response_schema,
     }
 
 
-def validate_ai_plan_data(data):
-    workout_plan = data.get("workout_plan", "").strip()
-    diet_plan = data.get("diet_plan", "").strip()
-    safety_notes = data.get("safety_notes", "").strip()
-    progress_message = data.get("progress_message", "").strip()
-    if not workout_plan or not diet_plan:
-        return None
-    if safety_notes:
-        workout_plan = f"{workout_plan}\n\nSafety notes: {safety_notes}"
-        diet_plan = f"{diet_plan}\n\nSafety notes: {safety_notes}"
-    if progress_message:
-        workout_plan = f"{workout_plan}\n\nProgress message: {progress_message}"
-    return workout_plan, diet_plan
+def _validate_plan_items(plan_data, valid_slot_times, available_equipment):
+    """All-or-nothing validation for a single plan (workout or diet).
+
+    Returns (True, None) on success, (None, reason) on first failure.
+    """
+    if not isinstance(plan_data, dict):
+        return None, "Plan is not a JSON object"
+
+    days = plan_data.get("days")
+    if not days or not isinstance(days, list):
+        return None, "Missing or invalid days array"
+
+    for day_idx, day in enumerate(days):
+        if not isinstance(day, dict):
+            return None, f"Day {day_idx} is not an object"
+
+        items = day.get("items")
+        if not items or not isinstance(items, list):
+            return None, f"Day {day_idx} missing items array"
+
+        for item_idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                return None, f"Day {day_idx} item {item_idx} is not an object"
+
+            for field in ("slot_time", "item_type", "title", "detail", "rationale"):
+                if not item.get(field):
+                    return None, f"Day {day_idx} item {item_idx} missing {field}"
+
+            rationale = str(item.get("rationale", "")).strip()
+            if len(rationale) < 40:
+                return None, f"Day {day_idx} item {item_idx} rationale under 40 characters"
+
+            slot_time = item.get("slot_time")
+            if slot_time not in valid_slot_times:
+                return None, (
+                    f"Day {day_idx} item {item_idx} slot_time {slot_time} "
+                    f"not in supplied slots"
+                )
+
+            if item.get("item_type") == "exercise":
+                title = item.get("title", "")
+                if title not in available_equipment:
+                    return None, (
+                        f"Day {day_idx} item {item_idx} exercise '{title}' "
+                        f"not in available equipment"
+                    )
+
+    return True, None
+
+
+def validate_ai_plan_data(data, plan_type, valid_slot_times, available_equipment):
+    """All-or-nothing validator for AI plan JSON.
+
+    Returns ({"workout": ..., "diet": ...}, None) on success,
+    (None, rejection_reason) on any failure.
+    """
+    if not isinstance(data, dict):
+        return None, "Response is not a JSON object"
+
+    result = {}
+
+    if plan_type in ("both", "workout"):
+        workout = data.get("workout")
+        if not workout:
+            return None, "Missing workout plan"
+        ok, reason = _validate_plan_items(workout, valid_slot_times, available_equipment)
+        if not ok:
+            return None, f"Workout invalid: {reason}"
+        result["workout"] = workout
+
+    if plan_type in ("both", "diet"):
+        diet = data.get("diet")
+        if not diet:
+            return None, "Missing diet plan"
+        ok, reason = _validate_plan_items(diet, valid_slot_times, available_equipment)
+        if not ok:
+            return None, f"Diet invalid: {reason}"
+        result["diet"] = diet
+
+    return result, None
+
+
+def _ai_items_to_plan_items(plan_data):
+    """Convert AI response plan days into plan_items rows."""
+    items = []
+    for day in plan_data.get("days", []):
+        day_label = day.get("day_label", "Day 1")
+        for pos, item in enumerate(day.get("items", [])):
+            evidence = item.get("evidence") or {}
+            items.append(
+                {
+                    "day_label": day_label,
+                    "slot_time": item.get("slot_time"),
+                    "item_type": item.get("item_type"),
+                    "title": item.get("title"),
+                    "detail": item.get("detail"),
+                    "rationale": item.get("rationale", ""),
+                    "evidence_grade": evidence.get("grade"),
+                    "evidence_source": evidence.get("source"),
+                    "source_url": evidence.get("url"),
+                    "confidence": item.get("confidence", "High"),
+                    "position": pos,
+                }
+            )
+    return items
+
+
+def _build_ai_plan_text(member, plan_data, plan_type):
+    """Build human-readable text from validated AI structured data."""
+    lines = [f"STRENGTHLAB AI {plan_type.upper()} BLUEPRINT"]
+    lines.append(
+        f"Goal: {member_text(member, 'primary_fitness_goal') or member_text(member, 'goal', 'general fitness')}"
+    )
+    lines.append(f"Level: {member_text(member, 'fitness_level', 'Beginner')}")
+    lines.append("")
+
+    for day in plan_data.get("days", []):
+        lines.append(day.get("day_label", ""))
+        for item in day.get("items", []):
+            lines.append(f"- {item['title']}: {item['detail']}")
+            lines.append(f"  Rationale: {item['rationale']}")
+            if item.get("confidence"):
+                lines.append(f"  Confidence: {item['confidence']}")
+            if item.get("slot_time"):
+                lines.append(f"  Time: {item['slot_time']}")
+        lines.append("")
+
+    if plan_type == "diet":
+        lines.append("Safety: Nutrition guidance is educational and not medical treatment.")
+    else:
+        lines.append(
+            "Safety: Stop sharp pain, dizziness, chest pain, numbness, or worsening joint pain immediately."
+        )
+    return "\n".join(lines)
+
+
+def _persist_and_build_ai_text(member, parsed, model, plan_type):
+    """Persist validated AI output as structured plan items and return text."""
+    from services.clinical_recommendation_service import get_or_create_health_profile
+    from services.supplement_recommendation_service import plan_safety_gate
+
+    member_id = member["id"]
+    health_profile = get_or_create_health_profile(db(), member_id)
+    safety_warnings = plan_safety_gate(member, health_profile)
+    blocked_reason = "\n".join(safety_warnings) if safety_warnings else None
+    plan_status = "blocked" if safety_warnings else "draft"
+
+    workout_text, diet_text = "", ""
+
+    with transaction() as conn:
+        if "workout" in parsed:
+            items = _ai_items_to_plan_items(parsed["workout"])
+            _persist_structured_plan(
+                member_id, "workout", items, provenance="ai", model=model, status=plan_status, blocked_reason=blocked_reason, conn=conn
+            )
+            workout_text = _build_ai_plan_text(member, parsed["workout"], "workout")
+
+        if "diet" in parsed:
+            items = _ai_items_to_plan_items(parsed["diet"])
+            _persist_structured_plan(
+                member_id, "diet", items, provenance="ai", model=model, status=plan_status, blocked_reason=blocked_reason, conn=conn
+            )
+            diet_text = _build_ai_plan_text(member, parsed["diet"], "diet")
+
+    return workout_text, diet_text
+
+
+def _ai_fallback_to_rules(member, plan_type, refusal_reason):
+    """Fall back to rule-based generation after AI rejection and record why."""
+    member_id = member["id"]
+
+    before_workout = query_one(
+        "SELECT id FROM plan_versions WHERE member_id = ? AND plan_type = 'workout' ORDER BY id DESC LIMIT 1",
+        (member_id,),
+    )
+    before_diet = query_one(
+        "SELECT id FROM plan_versions WHERE member_id = ? AND plan_type = 'diet' ORDER BY id DESC LIMIT 1",
+        (member_id,),
+    )
+    before_workout_id = before_workout["id"] if before_workout else None
+    before_diet_id = before_diet["id"] if before_diet else None
+
+    workout_text, diet_text = generate_rule_based_plans(member)
+
+    note = f"AI output refused: {refusal_reason}"
+    for pt, before_id in (("workout", before_workout_id), ("diet", before_diet_id)):
+        version = query_one(
+            "SELECT id FROM plan_versions WHERE member_id = ? AND plan_type = ? ORDER BY id DESC LIMIT 1",
+            (member_id, pt),
+        )
+        if version and version["id"] != before_id:
+            execute(
+                "UPDATE plan_versions SET review_note = ? WHERE id = ?",
+                (note, version["id"]),
+            )
+
+    return workout_text, diet_text
 
 
 def generate_openai_plans(member, api_key, model, customizations=None, plan_type="both"):
@@ -1795,7 +2402,7 @@ def generate_openai_plans(member, api_key, model, customizations=None, plan_type
             {"role": "user", "content": json.dumps(ai_plan_prompt(member, customizations, plan_type))},
         ],
     )
-    return validate_ai_plan_data(parse_ai_json(response.output_text))
+    return parse_ai_json(response.output_text)
 
 
 def generate_gemini_plans(member, api_key, model, customizations=None, plan_type="both"):
@@ -1838,7 +2445,7 @@ def generate_gemini_plans(member, api_key, model, customizations=None, plan_type
         .get("parts", [{}])[0]
         .get("text", "")
     )
-    return validate_ai_plan_data(parse_ai_json(text))
+    return parse_ai_json(text)
 
 
 def generate_ai_plans(member, customizations=None, plan_type="both"):
@@ -1846,25 +2453,52 @@ def generate_ai_plans(member, customizations=None, plan_type="both"):
     if not providers:
         return None
 
+    from services import circadian_service
+
+    wake = member_text(member, "wake_time") or None
+    workout_time = member_text(member, "workout_time") or None
+    sleep = member_text(member, "sleep_time") or None
+    slots = circadian_service.build_day_slots(wake, workout_time, sleep)
+    valid_slot_times = {s["slot_time"] for s in slots}
+    available_equipment = set(equipment_names())
+
+    last_rejection_reason = None
+    last_transport_error = None
+
     for provider in providers:
         for model in provider["models"]:
             for key_index, api_key in enumerate(provider["keys"], start=1):
                 try:
                     if provider["name"] == "openai":
-                        result = generate_openai_plans(member, api_key, model, customizations, plan_type)
+                        raw = generate_openai_plans(member, api_key, model, customizations, plan_type)
                     elif provider["name"] == "gemini":
-                        result = generate_gemini_plans(member, api_key, model, customizations, plan_type)
+                        raw = generate_gemini_plans(member, api_key, model, customizations, plan_type)
                     else:
-                        result = None
-                    if result:
+                        continue
+                    if raw is None:
+                        continue
+
+                    parsed, reason = validate_ai_plan_data(
+                        raw, plan_type, valid_slot_times, available_equipment
+                    )
+                    if parsed:
                         app.logger.info(
                             "AI plan generated with %s model %s key #%s",
                             provider["name"],
                             model,
                             key_index,
                         )
-                        return result
+                        return _persist_and_build_ai_text(member, parsed, model, plan_type)
+                    else:
+                        last_rejection_reason = reason
+                        app.logger.warning(
+                            "AI plan rejected from %s/%s: %s",
+                            provider["name"],
+                            model,
+                            reason,
+                        )
                 except Exception as error:
+                    last_transport_error = str(error)
                     app.logger.warning(
                         "AI provider failed: %s model %s key #%s. Error: %s",
                         provider["name"],
@@ -1872,21 +2506,66 @@ def generate_ai_plans(member, customizations=None, plan_type="both"):
                         key_index,
                         error,
                     )
+
+    if last_rejection_reason:
+        app.logger.warning(
+            "All AI providers rejected; falling back to rules. Last reason: %s",
+            last_rejection_reason,
+        )
+        record_generation_note(f"AI output was refused: {last_rejection_reason}")
+        return _ai_fallback_to_rules(member, plan_type, last_rejection_reason)
+
     app.logger.warning("All AI providers failed; using local fallback plan generator.")
+    record_generation_note(
+        f"AI provider unreachable: {last_transport_error}" if last_transport_error
+        else "No AI provider responded."
+    )
     return None
+
+
+def record_generation_note(note):
+    """Remember why a generation turned out the way it did, to show staff once.
+
+    Generation silently fell back to rules whenever a provider was rate-limited
+    or refused, so an admin clicking Generate saw a plan appear with no
+    indication that AI had been attempted at all.
+    """
+    if not note or not has_request_context():
+        return
+    notes = session.get("generation_notes", [])
+    notes.append(note)
+    session["generation_notes"] = notes[-4:]
+
+
+def take_generation_notes():
+    if not has_request_context():
+        return []
+    return session.pop("generation_notes", [])
 
 
 def generate_plans(member, prefer_ai=True):
     workout_subscription = service_level(member, "workout_subscription", "Premium" if member["premium"] else "Regular")
     diet_subscription = service_level(member, "diet_subscription", "Premium" if member["premium"] else "Regular")
-    workout = generate_plan_draft(member, "workout") if prefer_ai else generate_rule_based_plans(member)[0]
-    diet = "No diet plan subscription is active for this member."
-    if diet_subscription != "None":
-        diet = generate_plan_draft(member, "diet") if prefer_ai else generate_rule_based_plans(member)[1]
-    if workout_subscription != "Premium" and diet_subscription != "Premium":
-        local_workout, local_diet = generate_rule_based_plans(member)
-        return local_workout, local_diet if diet_subscription != "None" else diet
-    return workout, diet
+    no_diet_msg = "No diet plan subscription is active for this member."
+    wants_ai = prefer_ai and "Premium" in (workout_subscription, diet_subscription)
+
+    if wants_ai and ai_generation_enabled():
+        # One AI attempt covering every premium plan type. Previously each type
+        # was requested separately, and each fallback persisted BOTH types, so a
+        # single generation left four draft versions for two plan types.
+        plan_type = "both" if diet_subscription != "None" else "workout"
+        ai_result = generate_ai_plans(member, plan_type=plan_type)
+        if ai_result:
+            workout, diet = ai_result
+            record_generation_note(f"Plan generated by AI ({ai_generation_label()}).")
+            return workout, diet if diet_subscription != "None" else no_diet_msg
+    elif wants_ai:
+        record_generation_note("No AI provider is configured, so the built-in generator was used.")
+
+    local_workout, local_diet = generate_rule_based_plans(member)
+    if not wants_ai:
+        record_generation_note("Plan generated by the built-in rule engine.")
+    return local_workout, local_diet if diet_subscription != "None" else no_diet_msg
 
 
 def dashboard_stats():
@@ -2379,6 +3058,72 @@ def extract_day_plan(workout_plan, day_label):
     return picked
 
 
+def _approved_workout_items(member_id, focus):
+    """Return exercise items from the latest approved workout plan version for the given focus day."""
+    version = query_one(
+        """
+        SELECT * FROM plan_versions
+        WHERE member_id = ? AND plan_type = 'workout' AND status = 'approved'
+        ORDER BY generated_at DESC, id DESC LIMIT 1
+        """,
+        (member_id,),
+    )
+    if not version:
+        return None
+    # Fuzzy match day_label because stored labels are "Day 1 - Full Body A"
+    # while schedule focus is "Full Body A".
+    focus_words = [w for w in focus.replace("/", " ").split() if len(w) > 1]
+    all_items = query_all(
+        """
+        SELECT * FROM plan_items
+        WHERE plan_version_id = ? AND item_type = 'exercise'
+        ORDER BY position
+        """,
+        (version["id"],),
+    )
+    # Group by day_label and find the best match
+    day_groups = {}
+    for item in all_items:
+        day = item["day_label"] or ""
+        day_groups.setdefault(day, []).append(item)
+    matched_items = []
+    for day_label, items in day_groups.items():
+        day_lower = day_label.lower()
+        if all(word.lower() in day_lower for word in focus_words):
+            matched_items = items
+            break
+    if not matched_items:
+        return []
+    return [f"{item['title']}: {item['detail']}" for item in matched_items]
+
+
+def _approved_diet_items(member_id):
+    """Return meal/hydration/supplement items from the latest approved diet plan version.
+
+    Returns ``None`` when no approved diet version exists so callers can show an
+    honest empty state.
+    """
+    version = query_one(
+        """
+        SELECT * FROM plan_versions
+        WHERE member_id = ? AND plan_type = 'diet' AND status = 'approved'
+        ORDER BY generated_at DESC, id DESC LIMIT 1
+        """,
+        (member_id,),
+    )
+    if not version:
+        return None
+    rows = query_all(
+        """
+        SELECT * FROM plan_items
+        WHERE plan_version_id = ? AND item_type IN ('meal', 'hydration', 'supplement')
+        ORDER BY slot_time ASC, position ASC
+        """,
+        (version["id"],),
+    )
+    return [dict(row) for row in rows]
+
+
 def personalized_today_plan(member):
     level = infer_training_level(member)
     schedule = level_schedule(level)
@@ -2388,8 +3133,13 @@ def personalized_today_plan(member):
         start_date = date.today()
     day_number = (date.today() - start_date).days % 7
     focus = schedule[day_number]
-    workout_items = extract_day_plan(member["workout_plan"], focus)
-    if not workout_items and "rest" not in focus.lower() and "recovery" not in focus.lower() and "mobility" not in focus.lower():
+    workout_items = _approved_workout_items(member["id"], focus)
+    if workout_items is None:
+        # Honest empty state: no approved plan exists yet
+        workout_items = [
+            "No approved workout plan is available yet. Ask staff to review and approve your plan.",
+        ]
+    elif not workout_items and "rest" not in focus.lower() and "recovery" not in focus.lower() and "mobility" not in focus.lower():
         workout_items = [
             f"{focus}: follow your saved workout plan with controlled form.",
             "Keep 1-3 reps in reserve unless your trainer says otherwise.",
@@ -2700,11 +3450,51 @@ def mobile_login_id(phone):
     return username or None
 
 
-def default_mobile_password(phone):
-    username = mobile_login_id(phone)
-    if not username:
-        return None
-    return username[-4:] if len(username) >= 4 else "1234"
+# Excludes characters that are easily misread when a password is read aloud
+# or copied off a screen: 0/O, 1/l/I.
+TEMP_PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+
+
+def generate_temp_password(length=10):
+    """A single-use password for a new or reset account.
+
+    Replaces the old scheme of "last 4 digits of the mobile number", which was a
+    10,000-guess space keyed to a login ID that is itself the phone number.
+    """
+    return "".join(secrets.choice(TEMP_PASSWORD_ALPHABET) for _ in range(length))
+
+
+def remember_issued_credential(username, password, person=None):
+    """Stash a freshly issued password to show staff exactly once.
+
+    Only the hash is ever stored in the database; this lives in the signed session
+    and is cleared as soon as it has been displayed.
+    """
+    if not username or not password:
+        return
+    if not has_request_context():
+        # Seeding at startup: there is no staff member on screen to show this to.
+        return
+    issued = session.get("issued_credentials", [])
+    issued.append({"username": username, "password": password, "person": person})
+    session["issued_credentials"] = issued[-5:]
+
+
+def take_issued_credentials():
+    if not has_request_context():
+        return []
+    return session.pop("issued_credentials", [])
+
+
+def reset_user_password(user_id, username=None):
+    """Issue a fresh single-use password and force a change at next sign-in."""
+    password = generate_temp_password()
+    execute(
+        "UPDATE users SET password_hash = ?, must_change_password = 1, reset_token = NULL, reset_token_created_at = NULL WHERE id = ?",
+        (generate_password_hash(password), user_id),
+    )
+    remember_issued_credential(username, password)
+    return password
 
 
 def login_belongs_to_someone_else(user_row, role, member_id, trainer_id):
@@ -2772,7 +3562,7 @@ def set_manual_login_id(role, login_id, phone, member_id=None, trainer_id=None):
             (login_id, existing["id"]),
         )
         return login_id, None
-    password = default_mobile_password(phone) or login_id[-4:]
+    password = generate_temp_password()
     execute(
         """
         INSERT INTO users (username, password_hash, role, member_id, trainer_id, must_change_password, username_locked)
@@ -2780,6 +3570,84 @@ def set_manual_login_id(role, login_id, phone, member_id=None, trainer_id=None):
         """,
         (login_id, generate_password_hash(password), role, member_id, trainer_id),
     )
+    remember_issued_credential(login_id, password)
+    return login_id, None
+
+
+def login_belongs_to_someone_else(user_row, role, member_id, trainer_id):
+    """True when this username is already a live login for a different person."""
+    if user_row["role"] not in {"member", "trainer"}:
+        return True  # never repurpose a staff account
+    if role == "member":
+        owner_id = user_row["member_id"]
+        if not owner_id or owner_id == member_id:
+            return False
+        return query_one("SELECT id FROM members WHERE id = ?", (owner_id,)) is not None
+    if role == "trainer":
+        owner_id = user_row["trainer_id"]
+        if not owner_id or owner_id == trainer_id:
+            return False
+        return query_one("SELECT id FROM trainers WHERE id = ?", (owner_id,)) is not None
+    return False
+
+
+def login_conflict(role, phone, member_id=None, trainer_id=None):
+    """Who already owns the login this phone number would produce, if anyone.
+
+    Returns a dict describing the clash so staff can be told why no login was
+    created, or None when the number is free to use.
+    """
+    username = mobile_login_id(phone)
+    if not username:
+        return None
+    owner = query_one("SELECT * FROM users WHERE username = ?", (username,))
+    if not owner or not login_belongs_to_someone_else(owner, role, member_id, trainer_id):
+        return None
+    holder = None
+    if owner["role"] == "member" and owner["member_id"]:
+        holder = query_one("SELECT name FROM members WHERE id = ?", (owner["member_id"],))
+    elif owner["role"] == "trainer" and owner["trainer_id"]:
+        holder = query_one("SELECT name FROM trainers WHERE id = ?", (owner["trainer_id"],))
+    return {
+        "login_id": username,
+        "holder_name": holder["name"] if holder else None,
+        "holder_role": owner["role"],
+    }
+
+
+def set_manual_login_id(role, login_id, phone, member_id=None, trainer_id=None):
+    """Give this member/trainer an explicit login ID instead of the phone-derived one.
+
+    Returns (username, error). The username is pinned with username_locked so a
+    later phone sync does not rename it back into a collision.
+    """
+    login_id = (login_id or "").strip()
+    if not login_id:
+        return None, "Login ID cannot be empty."
+    if len(login_id) < 4:
+        return None, "Login ID must be at least 4 characters."
+    existing = query_one(
+        "SELECT id FROM users WHERE role = ? AND (member_id = ? OR trainer_id = ?)",
+        (role, member_id, trainer_id),
+    )
+    clash = query_one("SELECT id FROM users WHERE username = ?", (login_id,))
+    if clash and (not existing or clash["id"] != existing["id"]):
+        return None, f"Login ID '{login_id}' is already taken."
+    if existing:
+        execute(
+            "UPDATE users SET username = ?, username_locked = 1, active = 1 WHERE id = ?",
+            (login_id, existing["id"]),
+        )
+        return login_id, None
+    password = generate_temp_password()
+    execute(
+        """
+        INSERT INTO users (username, password_hash, role, member_id, trainer_id, must_change_password, username_locked)
+        VALUES (?, ?, ?, ?, ?, 1, 1)
+        """,
+        (login_id, generate_password_hash(password), role, member_id, trainer_id),
+    )
+    remember_issued_credential(login_id, password)
     return login_id, None
 
 
@@ -2787,7 +3655,6 @@ def create_or_update_mobile_user(role, phone, member_id=None, trainer_id=None, r
     username = mobile_login_id(phone)
     if not username:
         return None
-    password = default_mobile_password(phone)
     username_owner = query_one("SELECT * FROM users WHERE username = ?", (username,))
     existing = query_one(
         "SELECT id, username, username_locked FROM users WHERE role = ? AND (member_id = ? OR trainer_id = ?)",
@@ -2796,10 +3663,7 @@ def create_or_update_mobile_user(role, phone, member_id=None, trainer_id=None, r
     if existing and existing["username_locked"] and existing["username"] != username:
         # Staff assigned this login ID by hand; leave it alone.
         if reset_password:
-            execute(
-                "UPDATE users SET password_hash = ?, must_change_password = 1, reset_token = NULL, reset_token_created_at = NULL WHERE id = ?",
-                (generate_password_hash(password or existing["username"][-4:]), existing["id"]),
-            )
+            reset_user_password(existing["id"], existing["username"])
         return existing["username"]
     if username_owner and login_belongs_to_someone_else(username_owner, role, member_id, trainer_id):
         # Two people share this mobile number. Repurposing the login would hand
@@ -2814,10 +3678,7 @@ def create_or_update_mobile_user(role, phone, member_id=None, trainer_id=None, r
         if existing and existing["id"] != username_owner["id"]:
             execute("DELETE FROM users WHERE id = ?", (existing["id"],))
         if reset_password:
-            execute(
-                "UPDATE users SET password_hash = ?, must_change_password = 1, reset_token = NULL, reset_token_created_at = NULL WHERE id = ?",
-                (generate_password_hash(password), username_owner["id"]),
-            )
+            reset_user_password(username_owner["id"], username)
         return username
 
     if existing:
@@ -2826,16 +3687,15 @@ def create_or_update_mobile_user(role, phone, member_id=None, trainer_id=None, r
             (username, member_id, trainer_id, existing["id"]),
         )
         if reset_password:
-            execute(
-                "UPDATE users SET password_hash = ?, must_change_password = 1, reset_token = NULL, reset_token_created_at = NULL WHERE id = ?",
-                (generate_password_hash(password), existing["id"]),
-            )
+            reset_user_password(existing["id"], username)
         return username
 
+    password = generate_temp_password()
     execute(
         "INSERT INTO users (username, password_hash, role, member_id, trainer_id, must_change_password) VALUES (?, ?, ?, ?, ?, 1)",
         (username, generate_password_hash(password), role, member_id, trainer_id),
     )
+    remember_issued_credential(username, password)
     return username
 
 
@@ -2906,6 +3766,8 @@ def inject_helpers():
         "openai_model": OPENAI_MODEL,
         "csrf_token": csrf_token,
         "money": format_money,
+        "issued_credentials": take_issued_credentials,
+        "generation_notes": take_generation_notes,
     }
 
 
@@ -2995,6 +3857,13 @@ def forgot_password():
 def reset_password(token):
     user = query_one("SELECT * FROM users WHERE reset_token = ? AND active = 1", (token,))
     error = None
+    if user and user["reset_token_created_at"]:
+        try:
+            created = datetime.strptime(user["reset_token_created_at"], "%Y-%m-%d %H:%M:%S")
+            if datetime.now() - created > timedelta(hours=RESET_TOKEN_HOURS):
+                user = None
+        except ValueError:
+            user = None
     if not user:
         return render_template("reset_password.html", error="Invalid or expired reset link.", token=token)
     if request.method == "POST":
@@ -3226,8 +4095,9 @@ def add_member():
         INSERT INTO members
         (name, phone, email, address, emergency_contact, age, gender, height_cm, weight_kg,
          goal, fitness_level, food_preference, medical_notes, injury_notes,
-         plan_name, premium, workout_subscription, diet_subscription, trainer_id, subscription_start, subscription_end, payment_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         plan_name, premium, workout_subscription, diet_subscription, trainer_id, subscription_start, subscription_end, payment_status,
+         wake_time, sleep_time, workout_time)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             request.form["name"],
@@ -3252,15 +4122,14 @@ def add_member():
             subscription_start,
             subscription_end,
             "Due",
+            request.form.get("wake_time"),
+            request.form.get("sleep_time"),
+            request.form.get("workout_time"),
         ),
     )
     db().commit()
     member = query_one("SELECT * FROM members WHERE id = ?", (cursor.lastrowid,))
-    workout_plan, diet_plan = generate_plans(member, prefer_ai=True)
-    execute(
-        "UPDATE members SET workout_plan = ?, diet_plan = ? WHERE id = ?",
-        (workout_plan, diet_plan, member["id"]),
-    )
+    generate_plans(member, prefer_ai=True)
     log_notification(
         member["id"],
         f"Welcome {member['name']}! Your gym profile is ready. Your workout and diet plan has been generated.",
@@ -3850,7 +4719,6 @@ def generate_member_plan_draft(member_id):
         member=preview_member,
         trainers=query_all("SELECT * FROM trainers WHERE active = 1 ORDER BY name"),
         member_login=get_member_login(member_id),
-        default_password=default_mobile_password(preview_member["phone"]),
         draft_workout_plan=draft if plan_type == "workout" else None,
         draft_diet_plan=draft if plan_type == "diet" else None,
         selected_customizations=customizations,
@@ -3887,7 +4755,8 @@ def edit_member(member_id):
                 goal = ?, fitness_level = ?, food_preference = ?, medical_notes = ?, injury_notes = ?,
                 plan_name = ?, premium = ?, workout_subscription = ?, diet_subscription = ?, trainer_id = ?,
                 subscription_start = ?, subscription_end = ?, payment_status = ?,
-                workout_plan = ?, diet_plan = ?
+                workout_plan = ?, diet_plan = ?,
+                wake_time = ?, sleep_time = ?, workout_time = ?
             WHERE id = ?
             """,
             (
@@ -3915,16 +4784,15 @@ def edit_member(member_id):
                 request.form.get("payment_status", "Due"),
                 request.form.get("workout_plan"),
                 request.form.get("diet_plan"),
+                request.form.get("wake_time"),
+                request.form.get("sleep_time"),
+                request.form.get("workout_time"),
                 member_id,
             ),
         )
         member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
         if request.form.get("regenerate_plans"):
-            workout_plan, diet_plan = generate_plans(member, prefer_ai=True)
-            execute(
-                "UPDATE members SET workout_plan = ?, diet_plan = ? WHERE id = ?",
-                (workout_plan, diet_plan, member_id),
-            )
+            generate_plans(member, prefer_ai=True)
         login_id_input = request.form.get("login_id", "").strip()
         login_error = None
         if login_id_input and (not member_login or login_id_input != member_login["username"]):
@@ -3939,7 +4807,6 @@ def edit_member(member_id):
                 member=member,
                 trainers=trainers,
                 member_login=get_member_login(member_id),
-                default_password=default_mobile_password(member["phone"]),
                 login_conflict=login_conflict("member", member["phone"], member_id=member_id),
                 login_error=login_error,
             )
@@ -3961,7 +4828,6 @@ def edit_member(member_id):
         member=member,
         trainers=trainers,
         member_login=member_login,
-        default_password=default_mobile_password(member["phone"]),
         login_conflict=login_conflict("member", member["phone"], member_id=member_id),
     )
 
@@ -3972,11 +4838,11 @@ def regenerate(member_id):
     member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
     if not can_view_member(current_user(), member):
         return redirect(url_for("index"))
-    workout_plan, diet_plan = generate_plans(member, prefer_ai=True)
-    execute(
-        "UPDATE members SET workout_plan = ?, diet_plan = ? WHERE id = ?",
-        (workout_plan, diet_plan, member_id),
-    )
+    generate_plans(member, prefer_ai=True)
+    # Land on the review screen: the draft is there, not on the profile, and an
+    # admin who clicked Generate previously saw the profile look unchanged.
+    if current_user()["role"] in {"admin", "trainer"}:
+        return redirect(url_for("plan_review_view", member_id=member_id))
     log_notification(member_id, f"Hi {member['name']}, your updated workout and diet plan is ready.", "diet-plan.pdf")
     return redirect(url_for("member_detail", member_id=member_id))
 
@@ -4404,7 +5270,6 @@ def edit_trainer(trainer_id):
         trainer=trainer,
         trainer_login=trainer_login,
         assigned_members=assigned_members,
-        default_password=default_mobile_password(trainer["phone"]),
         login_conflict=login_conflict("trainer", trainer["phone"], trainer_id=trainer_id),
         login_error=login_error,
     )
@@ -4744,17 +5609,15 @@ def diet_pdf(member_id):
         y = draw_wrapped("No workout plan generated yet.", y)
     y -= 8
     y = draw_section_header("Nutrition Recipe Cards", y)
-    diet_text = member["diet_plan"] or ""
-    diet_json = None
-    if diet_text:
-        try:
-            diet_json = json.loads(diet_text)
-        except (TypeError, ValueError):
-            diet_json = None
-    if isinstance(diet_json, dict) and diet_json.get("meals"):
-        y = draw_recipe_cards_from_json(diet_json, y)
+    approved_diet_items = _approved_diet_items(member_id)
+    if approved_diet_items:
+        goal = member_text(member, "primary_fitness_goal") or member_text(member, "goal", "general fitness")
+        calories, protein, carbs, fat = nutrition_targets(member, goal)
+        food_preference = member_text(member, "food_preference", "balanced local meals")
+        diet_text = _build_diet_text(member, calories, protein, carbs, fat, food_preference, approved_diet_items)
     else:
-        y = draw_recipe_cards(diet_text or "No diet plan generated yet.", y)
+        diet_text = "No approved diet plan is available yet. Ask staff to review and approve your plan."
+    y = draw_wrapped(diet_text, y)
     y -= 8
     y = draw_section_header("Safety and Coach Notes", y)
     y = draw_instruction_panel(
@@ -4878,10 +5741,27 @@ def recommendations_review(member_id):
             flash("Fresh recommendation drafts generated successfully.", "good")
         elif action == "approve":
             rec_id = request.form.get("rec_id")
-            execute("UPDATE member_recommendations SET status = 'approved' WHERE id = ? AND member_id = ?", (rec_id, member_id))
+            note = request.form.get("note", "").strip()
+            user = current_user()
+            with transaction() as conn:
+                conn.execute("UPDATE member_recommendations SET status = 'approved' WHERE id = ? AND member_id = ?", (rec_id, member_id))
+                conn.execute(
+                    "INSERT INTO recommendation_reviews (recommendation_id, reviewed_by, status, review_note) VALUES (?, ?, 'approved', ?)",
+                    (rec_id, user["id"], note or "Approved"),
+                )
         elif action == "reject":
             rec_id = request.form.get("rec_id")
-            execute("UPDATE member_recommendations SET status = 'rejected' WHERE id = ? AND member_id = ?", (rec_id, member_id))
+            note = request.form.get("note", "").strip()
+            if not note:
+                flash("Rejection requires a note.", "error")
+                return redirect(url_for("recommendations_review", member_id=member_id))
+            user = current_user()
+            with transaction() as conn:
+                conn.execute("UPDATE member_recommendations SET status = 'rejected' WHERE id = ? AND member_id = ?", (rec_id, member_id))
+                conn.execute(
+                    "INSERT INTO recommendation_reviews (recommendation_id, reviewed_by, status, review_note) VALUES (?, ?, 'rejected', ?)",
+                    (rec_id, user["id"], note),
+                )
         elif action == "edit":
             rec_id = request.form.get("rec_id")
             execute(
@@ -4939,6 +5819,319 @@ def recommendations_review(member_id):
     )
 
 
+@app.route("/members/<int:member_id>/plan-versions/<int:version_id>/approve", methods=["POST"])
+@role_required("admin", "trainer", "owner")
+def approve_plan_version(member_id, version_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member or not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+
+    version = query_one("SELECT * FROM plan_versions WHERE id = ? AND member_id = ?", (version_id, member_id))
+    if not version:
+        abort(404)
+
+    # Blocked plans must not be approved by anyone, including admin and owner.
+    # This check runs before any form field is read.
+    # A non-null blocked_reason is the canonical guard regardless of current status.
+    if version["blocked_reason"]:
+        abort(403)
+
+    user = current_user()
+    note = request.form.get("note", "").strip()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with transaction() as conn:
+        # Supersede any prior approved version for this member and plan type
+        conn.execute(
+            """
+            UPDATE plan_versions
+            SET status = 'superseded', reviewed_by = ?, reviewed_at = ?
+            WHERE member_id = ? AND plan_type = ? AND status = 'approved'
+            """,
+            (user["id"], now, member_id, version["plan_type"]),
+        )
+        # Approve the requested version
+        conn.execute(
+            """
+            UPDATE plan_versions
+            SET status = 'approved', reviewed_by = ?, reviewed_at = ?, review_note = ?
+            WHERE id = ?
+            """,
+            (user["id"], now, note, version_id),
+        )
+        # Append audit row
+        conn.execute(
+            """
+            INSERT INTO plan_reviews (plan_version_id, reviewed_by, action, note, before_json, after_json, created_at)
+            VALUES (?, ?, 'approve', ?, ?, ?, ?)
+            """,
+            (
+                version_id,
+                user["id"],
+                note,
+                json.dumps({"status": version["status"]}),
+                json.dumps({"status": "approved"}),
+                now,
+            ),
+        )
+
+    flash("Plan version approved.", "good")
+    return redirect(url_for("member_detail", member_id=member_id))
+
+
+@app.route("/members/<int:member_id>/plan-versions/<int:version_id>/reject", methods=["POST"])
+@role_required("admin", "trainer", "owner")
+def reject_plan_version(member_id, version_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member or not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+
+    version = query_one("SELECT * FROM plan_versions WHERE id = ? AND member_id = ?", (version_id, member_id))
+    if not version:
+        abort(404)
+
+    note = request.form.get("note", "").strip()
+    if not note:
+        flash("Rejection requires a note.", "error")
+        return redirect(url_for("member_detail", member_id=member_id))
+
+    user = current_user()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with transaction() as conn:
+        conn.execute(
+            """
+            UPDATE plan_versions
+            SET status = 'rejected', reviewed_by = ?, reviewed_at = ?, review_note = ?
+            WHERE id = ?
+            """,
+            (user["id"], now, note, version_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO plan_reviews (plan_version_id, reviewed_by, action, note, before_json, after_json, created_at)
+            VALUES (?, ?, 'reject', ?, ?, ?, ?)
+            """,
+            (
+                version_id,
+                user["id"],
+                note,
+                json.dumps({"status": version["status"]}),
+                json.dumps({"status": "rejected"}),
+                now,
+            ),
+        )
+
+    flash("Plan version rejected.", "good")
+    return redirect(url_for("member_detail", member_id=member_id))
+
+
+@app.route("/members/<int:member_id>/plan-versions/<int:version_id>/edit", methods=["POST"])
+@role_required("admin", "trainer", "owner")
+def edit_plan_version(member_id, version_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member or not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+
+    version = query_one("SELECT * FROM plan_versions WHERE id = ? AND member_id = ?", (version_id, member_id))
+    if not version:
+        abort(404)
+
+    user = current_user()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    item_id = request.form.get("item_id", "").strip()
+
+    # --- item-level edit -----------------------------------------------------
+    if item_id:
+        item = query_one(
+            "SELECT * FROM plan_items WHERE id = ? AND plan_version_id = ?",
+            (item_id, version_id),
+        )
+        if not item:
+            abort(404)
+
+        new_title = request.form.get("title", "").strip()
+        new_detail = request.form.get("detail", "").strip()
+        new_rationale = request.form.get("rationale", "").strip()
+
+        if not new_rationale:
+            flash("Item edit requires a non-empty rationale.", "error")
+            return redirect(url_for("member_detail", member_id=member_id))
+
+        note = request.form.get("note", "").strip() or f"Edited item {item_id}"
+
+        before_item = {
+            "title": item["title"],
+            "detail": item["detail"],
+            "rationale": item["rationale"],
+            "provenance": item["provenance"] if "provenance" in item.keys() else None,
+        }
+
+        updates = []
+        params = []
+        if new_title:
+            updates.append("title = ?")
+            params.append(new_title)
+        if new_detail:
+            updates.append("detail = ?")
+            params.append(new_detail)
+        updates.append("rationale = ?")
+        params.append(new_rationale)
+        updates.append("provenance = ?")
+        params.append("admin")
+        params.extend([item_id, version_id])
+
+        with transaction() as conn:
+            conn.execute(
+                f"UPDATE plan_items SET {', '.join(updates)} WHERE id = ? AND plan_version_id = ?",
+                params,
+            )
+            after_item = {
+                "title": new_title or item["title"],
+                "detail": new_detail or item["detail"],
+                "rationale": new_rationale,
+                "provenance": "admin",
+            }
+            conn.execute(
+                """
+                INSERT INTO plan_reviews (plan_version_id, reviewed_by, action, note, before_json, after_json, created_at)
+                VALUES (?, ?, 'edit', ?, ?, ?, ?)
+                """,
+                (
+                    version_id,
+                    user["id"],
+                    note,
+                    json.dumps(before_item),
+                    json.dumps(after_item),
+                    now,
+                ),
+            )
+
+        flash("Plan item updated.", "good")
+        return redirect(url_for("member_detail", member_id=member_id))
+
+    # --- version-level edit --------------------------------------------------
+    before = {
+        "status": version["status"],
+        "review_note": version["review_note"] or "",
+    }
+
+    note = request.form.get("note", "").strip()
+    new_status = request.form.get("status", version["status"]).strip()
+    allowed = {"draft", "pending_review", "approved", "rejected", "blocked"}
+    if new_status not in allowed:
+        new_status = version["status"]
+
+    # Blocked versions (blocked_reason set) may not be promoted to approved
+    # through the edit route.
+    if version["blocked_reason"] and new_status == "approved":
+        flash("Blocked plans cannot be approved through edit.", "error")
+        return redirect(url_for("member_detail", member_id=member_id))
+
+    with transaction() as conn:
+        conn.execute(
+            """
+            UPDATE plan_versions
+            SET status = ?, reviewed_by = ?, reviewed_at = ?, review_note = ?
+            WHERE id = ?
+            """,
+            (new_status, user["id"], now, note, version_id),
+        )
+        after = {
+            "status": new_status,
+            "review_note": note,
+        }
+        conn.execute(
+            """
+            INSERT INTO plan_reviews (plan_version_id, reviewed_by, action, note, before_json, after_json, created_at)
+            VALUES (?, ?, 'edit', ?, ?, ?, ?)
+            """,
+            (
+                version_id,
+                user["id"],
+                note,
+                json.dumps(before),
+                json.dumps(after),
+                now,
+            ),
+        )
+
+    flash("Plan version updated.", "good")
+    return redirect(url_for("member_detail", member_id=member_id))
+
+
+@app.route("/members/<int:member_id>/plan-versions/<int:version_id>/items/<int:item_id>/edit", methods=["POST"])
+@role_required("admin", "trainer", "owner")
+def edit_plan_item(member_id, version_id, item_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member or not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+
+    version = query_one("SELECT * FROM plan_versions WHERE id = ? AND member_id = ?", (version_id, member_id))
+    if not version:
+        abort(404)
+
+    item = query_one("SELECT * FROM plan_items WHERE id = ? AND plan_version_id = ?", (item_id, version_id))
+    if not item:
+        abort(404)
+
+    user = current_user()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Build before snapshot of the item
+    before = {
+        "title": item["title"] or "",
+        "detail": item["detail"] or "",
+        "rationale": item["rationale"] or "",
+    }
+
+    new_title = request.form.get("title", item["title"] or "").strip()
+    new_detail = request.form.get("detail", item["detail"] or "").strip()
+    new_rationale = request.form.get("rationale", item["rationale"] or "").strip()
+
+    if not new_rationale:
+        flash("Item edit requires a non-empty rationale.", "error")
+        return redirect(url_for("member_detail", member_id=member_id))
+
+    with transaction() as conn:
+        conn.execute(
+            """
+            UPDATE plan_items
+            SET title = ?, detail = ?, rationale = ?, provenance = ?
+            WHERE id = ?
+            """,
+            (new_title, new_detail, new_rationale, "admin", item_id),
+        )
+        # Mark version provenance as admin since staff edited content
+        conn.execute(
+            "UPDATE plan_versions SET provenance = 'admin' WHERE id = ?",
+            (version_id,),
+        )
+        after = {
+            "title": new_title,
+            "detail": new_detail,
+            "rationale": new_rationale,
+            "provenance": "admin",
+        }
+        conn.execute(
+            """
+            INSERT INTO plan_reviews (plan_version_id, reviewed_by, action, note, before_json, after_json, created_at)
+            VALUES (?, ?, 'edit', ?, ?, ?, ?)
+            """,
+            (
+                version_id,
+                user["id"],
+                f"Edited item {item_id}: title/detail/rationale",
+                json.dumps(before),
+                json.dumps(after),
+                now,
+            ),
+        )
+
+    flash("Plan item updated.", "good")
+    return redirect(url_for("member_detail", member_id=member_id))
+
+
 @app.route("/members/<int:member_id>/recommendations")
 @login_required
 def recommendations(member_id):
@@ -4955,6 +6148,95 @@ def recommendations(member_id):
         member=member,
         health_profile=health_profile,
         recommendations=recommendations
+    )
+
+
+@app.route("/members/<int:member_id>/plan")
+@login_required
+def member_plan_view(member_id):
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member or not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+
+    tables = {row[0] for row in query_all("SELECT name FROM sqlite_master WHERE type='table'")}
+    plan = None
+    plan_items = []
+
+    if "plan_versions" in tables:
+        plan = query_one(
+            "SELECT * FROM plan_versions WHERE member_id = ? AND status = 'approved' ORDER BY id DESC LIMIT 1",
+            (member_id,)
+        )
+        if plan and "plan_items" in tables:
+            plan_items = query_all(
+                "SELECT * FROM plan_items WHERE plan_version_id = ? ORDER BY position ASC, slot_time ASC",
+                (plan["id"],)
+            )
+
+    return render_template(
+        "member_plan.html",
+        member=member,
+        plan=plan,
+        plan_items=plan_items
+    )
+
+
+@app.route("/members/<int:member_id>/plan/review")
+@role_required("admin", "trainer")
+def plan_review_view(member_id):
+    """Read-only review screen. Approve/reject/edit post to the plan-version routes."""
+    member = row_or_none("members", member_id)
+    if not member:
+        abort(404)
+
+    # Latest version awaiting a decision, per plan type. No fabricated preview:
+    # if nothing has been generated the screen says so and offers to generate.
+    pending_versions = query_all(
+        """
+        SELECT * FROM plan_versions
+        WHERE member_id = ? AND status IN ('draft', 'pending_review', 'blocked')
+        ORDER BY plan_type, id DESC
+        """,
+        (member_id,),
+    )
+    # One entry per plan type - showing only the first hid the diet plan entirely.
+    seen_types = set()
+    versions = []
+    for version in pending_versions:
+        if version["plan_type"] in seen_types:
+            continue
+        seen_types.add(version["plan_type"])
+        versions.append(version)
+
+    plans = []
+    for version in versions:
+        items = query_all(
+            "SELECT * FROM plan_items WHERE plan_version_id = ? ORDER BY position ASC, slot_time ASC",
+            (version["id"],),
+        )
+        items_by_day = {}
+        for item in items:
+            items_by_day.setdefault(item["day_label"] or "Every day", []).append(item)
+        plans.append({
+            "version": version,
+            "items": items,
+            "items_by_day": items_by_day,
+            "item_count": len(items),
+        })
+
+    approved = query_all(
+        """
+        SELECT plan_type, id, reviewed_at FROM plan_versions
+        WHERE member_id = ? AND status = 'approved'
+        """,
+        (member_id,),
+    )
+
+    return render_template(
+        "plan_review.html",
+        member=member,
+        plans=plans,
+        approved={row["plan_type"]: row for row in approved},
     )
 
 

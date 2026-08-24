@@ -305,3 +305,107 @@ def test_successful_renewal_writes_all_three_records(admin):
     assert payments == 1 and history == 1
     assert after["payment_status"] == "Paid"
     assert after["subscription_end"] == result["renewal_end"]
+
+
+# --- plan engine hardening regressions ----------------------------------------
+
+def test_generation_does_not_overwrite_legacy_plan_columns(admin):
+    """Draft generation must not write unapproved text into members.*_plan."""
+    with gym_app.app.app_context():
+        member = gym_app.query_one("SELECT * FROM members LIMIT 1")
+        gym_app.execute(
+            "UPDATE members SET workout_plan = 'Legacy workout', diet_plan = 'Legacy diet' WHERE id = ?",
+            (member["id"],),
+        )
+        gym_app.generate_rule_based_plans(member)
+        after = gym_app.query_one("SELECT workout_plan, diet_plan FROM members WHERE id = ?", (member["id"],))
+    assert after["workout_plan"] == "Legacy workout"
+    assert after["diet_plan"] == "Legacy diet"
+
+
+def test_diet_pdf_reads_approved_plan_items_only(admin):
+    """The diet PDF must use approved structured items, not legacy draft text."""
+    with gym_app.app.app_context():
+        member = gym_app.query_one("SELECT * FROM members LIMIT 1")
+        gym_app.execute("UPDATE members SET diet_plan = 'Legacy draft diet' WHERE id = ?", (member["id"],))
+        gym_app.execute(
+            "INSERT INTO plan_versions (member_id, plan_type, status, provenance, generated_at) VALUES (?, 'diet', 'approved', 'rule', datetime('now'))",
+            (member["id"],),
+        )
+        version_id = gym_app.query_one("SELECT last_insert_rowid() AS id")["id"]
+        gym_app.execute(
+            "INSERT INTO plan_items (plan_version_id, day_label, item_type, title, detail, rationale, position) VALUES (?, 'Every day', 'meal', 'Approved Meal', 'Rice and dal', 'Balanced macros', 0)",
+            (version_id,),
+        )
+    response = admin.get(f"/members/{member['id']}/diet.pdf")
+    assert response.status_code == 200
+    assert response.content_type == "application/pdf"
+    # Verify the helper returns approved items, not legacy text
+    with gym_app.app.app_context():
+        items = gym_app._approved_diet_items(member["id"])
+    assert items is not None
+    assert len(items) == 1
+    assert items[0]["title"] == "Approved Meal"
+
+
+def test_rule_based_plan_generation_is_atomic_for_workout_and_diet(admin):
+    """Both plan types must land in the same transaction."""
+    with gym_app.app.app_context():
+        member = gym_app.query_one("SELECT * FROM members LIMIT 1")
+        gym_app.generate_rule_based_plans(member)
+        workout = gym_app.query_one(
+            "SELECT * FROM plan_versions WHERE member_id = ? AND plan_type = 'workout' ORDER BY id DESC LIMIT 1",
+            (member["id"],),
+        )
+        diet = gym_app.query_one(
+            "SELECT * FROM plan_versions WHERE member_id = ? AND plan_type = 'diet' ORDER BY id DESC LIMIT 1",
+            (member["id"],),
+        )
+    assert workout is not None
+    assert diet is not None
+    assert workout["status"] == diet["status"]
+    assert workout["generated_at"] == diet["generated_at"]
+
+
+def test_recommendation_approve_and_audit_are_atomic(admin):
+    """Status change and audit insert must both succeed or both roll back."""
+    with gym_app.app.app_context():
+        member = gym_app.query_one("SELECT * FROM members LIMIT 1")
+        gym_app.execute(
+            """
+            INSERT INTO member_recommendations
+            (member_id, title, recommendation_type, why_appeared, confidence_score, first_step, supplement_candidate, food_first_alternative, suggested_lab, safety_notes, recommendation_level, status)
+            VALUES (?, 'Test Rec', 'supplement', 'Test', 'High', 'Eat food', 'None', 'Food', 'None', 'Safe', 'food_first', 'pending_review')
+            """,
+            (member["id"],),
+        )
+        rec_id = gym_app.query_one("SELECT last_insert_rowid() AS id")["id"]
+
+    response = post(admin, f"/members/{member['id']}/recommendations/review", source="/members", action="approve", rec_id=str(rec_id), note="Good to go")
+    assert response.status_code == 302
+
+    with gym_app.app.app_context():
+        rec = gym_app.query_one("SELECT status FROM member_recommendations WHERE id = ?", (rec_id,))
+        audit = gym_app.query_one(
+            "SELECT * FROM recommendation_reviews WHERE recommendation_id = ? ORDER BY id DESC LIMIT 1",
+            (rec_id,),
+        )
+    assert rec["status"] == "approved"
+    assert audit is not None
+    assert audit["status"] == "approved"
+
+
+def test_preview_form_preserves_explicitly_cleared_time_fields(admin):
+    """An empty string in the form must not be replaced by the stored value."""
+    with gym_app.app.app_context():
+        member = gym_app.query_one("SELECT * FROM members LIMIT 1")
+        gym_app.execute(
+            "UPDATE members SET wake_time = '06:00', sleep_time = '22:00', workout_time = '07:00' WHERE id = ?",
+            (member["id"],),
+        )
+        member = gym_app.query_one("SELECT * FROM members WHERE id = ?", (member["id"],))
+    form = {"wake_time": "06:00", "sleep_time": "", "workout_time": "07:00"}
+    preview = gym_app.member_preview_from_form(member, form)
+    assert preview["wake_time"] == "06:00"
+    assert preview["sleep_time"] == ""
+    assert preview["workout_time"] == "07:00"
