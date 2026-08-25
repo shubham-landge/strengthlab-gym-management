@@ -5877,6 +5877,55 @@ def recommendations_review(member_id):
     )
 
 
+def render_plan_items_as_text(items):
+    """Flatten approved plan items into the plain text older screens display."""
+    lines, current_day = [], None
+    for item in items:
+        day = item["day_label"] or "Every day"
+        if day != current_day:
+            if lines:
+                lines.append("")
+            lines.append(day)
+            current_day = day
+        slot = f"{item['slot_time']} " if item["slot_time"] else ""
+        lines.append(f"- {slot}{item['title']}")
+        if item["detail"]:
+            lines.append(f"  {item['detail']}")
+        if item["rationale"]:
+            lines.append(f"  Why: {item['rationale']}")
+    return "\n".join(lines)
+
+
+def publish_approved_plan_text(member_id, plan_type):
+    """Mirror the approved plan into members.workout_plan / diet_plan.
+
+    Those columns are still what member_detail, the plan PDF and training-level
+    inference read. Generation deliberately stopped writing to them so drafts
+    could not leak to members, but approval never started - so approving a plan
+    changed nothing any of those screens displayed.
+    """
+    version = query_one(
+        """
+        SELECT * FROM plan_versions
+        WHERE member_id = ? AND plan_type = ? AND status = 'approved'
+        ORDER BY id DESC LIMIT 1
+        """,
+        (member_id, plan_type),
+    )
+    if not version:
+        return None
+    items = query_all(
+        "SELECT * FROM plan_items WHERE plan_version_id = ? ORDER BY position ASC, slot_time ASC",
+        (version["id"],),
+    )
+    if not items:
+        return None
+    text = render_plan_items_as_text(items)
+    column = "workout_plan" if plan_type == "workout" else "diet_plan"
+    execute(f"UPDATE members SET {column} = ? WHERE id = ?", (text, member_id))
+    return text
+
+
 @app.route("/members/<int:member_id>/plan-versions/<int:version_id>/approve", methods=["POST"])
 @role_required("admin", "trainer", "owner")
 def approve_plan_version(member_id, version_id):
@@ -5933,7 +5982,9 @@ def approve_plan_version(member_id, version_id):
             ),
         )
 
-    flash("Plan version approved.", "good")
+    # Mirror it into the columns member_detail, the PDF and level inference read.
+    publish_approved_plan_text(member_id, version["plan_type"])
+    flash(f"{version['plan_type'].title()} plan approved and published to the member.", "good")
     return redirect(url_for("member_detail", member_id=member_id))
 
 
