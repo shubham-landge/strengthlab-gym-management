@@ -164,10 +164,19 @@ def test_migration_is_idempotent():
 # --- real database copy ------------------------------------------------------
 
 def test_migration_against_copy_of_real_database():
-    """A temporary copy of gym_manager.db must survive init_db() and migrate plans."""
+    """A copy of the real gym_manager.db must survive init_db() and migrate plans.
+
+    The legacy fixture is seeded into the copy rather than assumed. Reading
+    whatever plan text the developer's database happens to hold made this test
+    pass or fail depending on whether the app had already been run - once a
+    database is migrated there is no legacy text left to migrate.
+    """
     real_db = os.path.join(gym_app.BASE_DIR, "gym_manager.db")
     if not os.path.exists(real_db):
         pytest.skip("Real gym_manager.db not found")
+
+    legacy_workout = "LEGACY WORKOUT TEXT\nDay 1: bench, rows, curls"
+    legacy_diet = "LEGACY DIET TEXT\nBreakfast: eggs and oats"
 
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
@@ -176,13 +185,15 @@ def test_migration_against_copy_of_real_database():
     try:
         with sqlite3.connect(tmp.name) as conn:
             conn.row_factory = sqlite3.Row
-            members_with_plans = conn.execute(
-                "SELECT id, workout_plan, diet_plan FROM members WHERE COALESCE(workout_plan, '') != '' OR COALESCE(diet_plan, '') != ''"
-            ).fetchall()
-            if not members_with_plans:
-                pytest.skip("Real database has no members with legacy plans")
+            member_id = conn.execute("SELECT id FROM members LIMIT 1").fetchone()["id"]
+            # Return this member to a pre-migration state.
+            conn.execute("DELETE FROM plan_items WHERE plan_version_id IN "
+                         "(SELECT id FROM plan_versions WHERE member_id = ?)", (member_id,))
+            conn.execute("DELETE FROM plan_versions WHERE member_id = ?", (member_id,))
+            conn.execute("UPDATE members SET workout_plan = ?, diet_plan = ? WHERE id = ?",
+                         (legacy_workout, legacy_diet, member_id))
+            conn.commit()
 
-        # Patch DB_PATH, run init_db, then restore
         original_db_path = gym_app.DB_PATH
         gym_app.DB_PATH = tmp.name
         try:
@@ -192,23 +203,17 @@ def test_migration_against_copy_of_real_database():
 
         with sqlite3.connect(tmp.name) as conn:
             conn.row_factory = sqlite3.Row
-            for row in members_with_plans:
-                member_id = row["id"]
-                for plan_type in ("workout", "diet"):
-                    text = row[f"{plan_type}_plan"]
-                    if not text or not text.strip():
-                        continue
-                    version = conn.execute(
-                        "SELECT * FROM plan_versions WHERE member_id = ? AND plan_type = ? AND status = 'approved'",
-                        (member_id, plan_type),
-                    ).fetchone()
-                    assert version is not None, f"member {member_id} {plan_type} was not migrated"
-                    item = conn.execute(
-                        "SELECT * FROM plan_items WHERE plan_version_id = ?",
-                        (version["id"],),
-                    ).fetchone()
-                    assert item is not None
-                    assert item["detail"] == text
+            for plan_type, text in (("workout", legacy_workout), ("diet", legacy_diet)):
+                version = conn.execute(
+                    "SELECT * FROM plan_versions WHERE member_id = ? AND plan_type = ? AND status = 'approved'",
+                    (member_id, plan_type),
+                ).fetchone()
+                assert version is not None, f"{plan_type} was not migrated"
+                item = conn.execute(
+                    "SELECT * FROM plan_items WHERE plan_version_id = ?", (version["id"],)
+                ).fetchone()
+                assert item is not None, f"{plan_type} version has no items"
+                assert item["detail"] == text, "the original text must be preserved verbatim"
     finally:
         os.unlink(tmp.name)
 
