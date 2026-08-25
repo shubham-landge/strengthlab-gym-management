@@ -68,7 +68,16 @@
   </article>
 </section>
 
-<section class="today-grid">
+<!-- Member Hub Section Navigation Bar (Part 2 Information Architecture) -->
+<nav class="member-hub-tabs" aria-label="Member Hub Navigation">
+  <a href="#hub-overview" class="hub-tab active">Overview & Today</a>
+  <a href="#hub-plans" class="hub-tab">Plans & Review</a>
+  <a href="#hub-payments" class="hub-tab">Payments & Renewals</a>
+  <a href="#hub-attendance" class="hub-tab">Attendance & Progress</a>
+  <a href="#hub-health" class="hub-tab">Health Questionnaire</a>
+</nav>
+
+<section class="today-grid" id="hub-overview">
   <article class="today-card accent-card">
     <span>Warm-up</span>
     <ul>{% for item in today_plan.warmup %}<li>{{ item }}</li>{% endfor %}</ul>
