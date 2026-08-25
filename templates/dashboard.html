@@ -2,11 +2,40 @@
 {% block content %}
 <header class="page-header">
   <div>
-    <p class="eyebrow">Operations</p>
+    <p class="eyebrow">Operations & Daily Workflow</p>
     <h1>StrengthLab dashboard</h1>
   </div>
   <a class="button primary" href="{{ url_for('members') }}">+ Add member</a>
 </header>
+
+<!-- Inline Check-In Search Bar (Part 1 Workflow Speed) -->
+<section class="panel" style="margin-bottom: 20px; background: var(--panel-2); border: 1px solid var(--accent-soft);">
+  <form method="post" action="{{ url_for('attendance') }}" id="checkin-form" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="in">
+    <input type="hidden" name="member_id" id="selected_checkin_member_id" value="">
+    <div style="flex: 1; min-width: 260px; position: relative;">
+      <label for="global-search-input" style="font-size: 0.75rem; text-transform: uppercase; font-weight: 700; color: var(--muted); display: block; margin-bottom: 4px;">
+        Fast Check-In Member <small style="font-weight: normal; color: var(--accent);">(Press '/' to focus)</small>
+      </label>
+      <input 
+        type="text" 
+        id="global-search-input" 
+        list="member-checkin-list" 
+        placeholder="Type member name or phone number and press Enter..." 
+        style="width: 100%; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--input-bg); color: var(--ink); font-size: 0.95rem;" 
+        autocomplete="off" 
+        required
+      >
+      <datalist id="member-checkin-list">
+        {% for m in all_members %}
+        <option data-id="{{ m.id }}" value="{{ m.name }} ({{ m.phone }})"></option>
+        {% endfor %}
+      </datalist>
+    </div>
+    <button class="button primary" type="submit" style="margin-top: 20px; height: 42px;">Check In Member</button>
+  </form>
+</section>
 
 <section class="stats-grid">
   <div class="stat">
@@ -51,6 +80,92 @@
   </div>
 </section>
 
+<!-- Today Action Queue Section (Part 1 Daily Workflow Speed) -->
+<section class="panel" style="margin-bottom: 20px;">
+  <div class="section-title">
+    <h2>Today's Action Queue</h2>
+    <small>Inline tasks requiring immediate attention: plan approvals, dues collection, and equipment service.</small>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-top: 15px;">
+    
+    <!-- Queue 1: Plans Waiting for Approval -->
+    <div style="background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 10px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 8px;">
+        <h3 style="margin: 0; font-size: 1rem; color: var(--ink);">Plans Awaiting Approval</h3>
+        <span class="pill warn" style="font-size: 0.72rem;">{{ pending_plans|length }} Pending</span>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        {% for plan in pending_plans %}
+        <div style="background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px; display: flex; justify-content: space-between; align-items: center;">
+          <div>
+            <strong style="display: block; font-size: 0.9rem; color: var(--ink);">{{ plan.member_name }}</strong>
+            <small style="color: var(--muted); text-transform: uppercase; font-size: 0.7rem;">{{ plan.plan_type }} plan · {{ plan.status }}</small>
+          </div>
+          <a class="button primary" style="padding: 4px 10px; font-size: 0.75rem;" href="{{ url_for('member_detail', member_id=plan.member_id) }}">Review →</a>
+        </div>
+        {% else %}
+        <p class="empty" style="padding: 16px 0; margin: 0; font-size: 0.85rem;">All member plans are approved.</p>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Queue 2: Dues & Payments -->
+    <div style="background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 10px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 8px;">
+        <h3 style="margin: 0; font-size: 1rem; color: var(--ink);">Outstanding Dues</h3>
+        <a href="{{ url_for('payments') }}" style="font-size: 0.8rem;">Manage Payments →</a>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        {% for pay in due_payments_queue %}
+        <div style="background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px; display: flex; justify-content: space-between; align-items: center;">
+          <div>
+            <strong style="display: block; font-size: 0.9rem; color: var(--ink);">{{ pay.member_name }}</strong>
+            <small style="color: var(--warn); font-weight: 600; font-size: 0.75rem;">Due: {{ money(pay.amount) }}</small>
+          </div>
+          <a class="button" style="padding: 4px 10px; font-size: 0.75rem;" href="{{ url_for('payments') }}?member_id={{ pay.member_id }}">Collect →</a>
+        </div>
+        {% else %}
+        <p class="empty" style="padding: 16px 0; margin: 0; font-size: 0.85rem;">No open dues outstanding.</p>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Queue 3: Equipment Watch & Attendance -->
+    <div style="background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 10px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 8px;">
+        <h3 style="margin: 0; font-size: 1rem; color: var(--ink);">Equipment & Attendance</h3>
+        <a href="{{ url_for('equipment') }}" style="font-size: 0.8rem;">Equipment →</a>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        {% for item in equipment_watch %}
+        <div style="background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 10px; display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 0.85rem; font-weight: 500;">{{ item.name }}</span>
+          <span class="pill warn" style="font-size: 0.68rem;">{{ item.condition_status }}</span>
+        </div>
+        {% else %}
+        <p class="empty" style="padding: 8px 0; margin: 0; font-size: 0.85rem;">All equipment in good condition.</p>
+        {% endfor %}
+
+        <div style="margin-top: 6px; border-top: 1px dashed var(--line); padding-top: 8px;">
+          <small style="color: var(--muted); font-size: 0.75rem; text-transform: uppercase; display: block; margin-bottom: 4px;">Recent Check-ins Today</small>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+            {% for c in today_checkins %}
+            <span class="pill good" style="font-size: 0.72rem;">{{ c.member_name }}</span>
+            {% else %}
+            <small style="color: var(--muted);">No check-ins yet today.</small>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
 <section class="two-col">
   <div>
     <div class="section-title"><h2>Recent members</h2><a href="{{ url_for('members') }}">View all →</a></div>
@@ -76,35 +191,39 @@
   </div>
 
   <div>
-    <div class="section-title"><h2>Equipment watch</h2><a href="{{ url_for('equipment') }}">Manage →</a></div>
+    <div class="section-title"><h2>Announcements</h2><a href="{{ url_for('announcements') }}">Broadcast →</a></div>
     <div class="stack">
-      {% for item in equipment %}
-      <div class="item-row">
-        <div>
-          <strong>{{ item.name }}</strong>
-          <small>{{ item.category }} · Qty {{ item.quantity }}</small>
-        </div>
-        <span class="pill {{ 'warn' if item.condition_status != 'Good' else 'good' }}">{{ item.condition_status }}</span>
-      </div>
+      {% for note in announcements %}
+      <article class="card" style="padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm);">
+        <h3 style="margin: 0 0 4px 0; font-size: 0.95rem;">{{ note.title }}</h3>
+        <p style="margin: 0 0 6px 0; font-size: 0.85rem; color: var(--muted);">{{ note.message }}</p>
+        <small style="color: var(--muted); font-size: 0.72rem;">{{ note.created_at }}</small>
+      </article>
       {% else %}
-      <p class="empty">No equipment recorded.</p>
+      <p class="empty">No announcements yet.</p>
       {% endfor %}
     </div>
   </div>
 </section>
 
-<section class="panel">
-  <div class="section-title"><h2>Announcements</h2><a href="{{ url_for('announcements') }}">Broadcast →</a></div>
-  <div class="cards">
-    {% for note in announcements %}
-    <article class="card">
-      <h3>{{ note.title }}</h3>
-      <p>{{ note.message }}</p>
-      <small>{{ note.created_at }}</small>
-    </article>
-    {% else %}
-    <p class="empty">No announcements yet.</p>
-    {% endfor %}
-  </div>
-</section>
+<script>
+  // Link Search Datalist to Member ID input on check-in form
+  const checkinInput = document.getElementById('global-search-input');
+  const hiddenMemberId = document.getElementById('selected_checkin_member_id');
+  const checkinList = document.getElementById('member-checkin-list');
+
+  if (checkinInput && checkinList) {
+    checkinInput.addEventListener('input', function() {
+      const val = this.value;
+      const options = checkinList.querySelectorAll('option');
+      let matchedId = '';
+      options.forEach(opt => {
+        if (opt.value === val) {
+          matchedId = opt.getAttribute('data-id');
+        }
+      });
+      hiddenMemberId.value = matchedId;
+    });
+  }
+</script>
 {% endblock %}
