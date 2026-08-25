@@ -138,6 +138,18 @@ branches that do not overlap:
 - [`docs/tasks/antigravity-frontend.md`](docs/tasks/antigravity-frontend.md) —
   circadian service, admin review screen, member plan view
 
+## In Progress
+
+- [`docs/tasks/antigravity-admin-ux.md`](docs/tasks/antigravity-admin-ux.md) —
+  admin UX: daily workflow speed and information architecture (Antigravity,
+  branch `feat/admin-ux`).
+- Coach-grade plan content with periodisation (Claude, branch
+  `feat/coach-grade-plans`).
+
+Parallel agents must work in **separate git worktrees**. A shared working tree
+previously let an untracked file leak between branches, so both agents believed
+their branch passed when neither did on a clean checkout.
+
 ## WhatsApp Notes
 
 This version uses WhatsApp click-to-send URLs and a notification queue. For automated background sending, connect the queue to WhatsApp Business Cloud API or Twilio using your approved business number and credentials.
