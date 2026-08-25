@@ -18,6 +18,7 @@ from reportlab.pdfgen import canvas
 from openpyxl import Workbook
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from services import programming
 from services.secret_store import decrypt_secret, encrypt_secret, mask_secret
 
 
@@ -1909,6 +1910,27 @@ def generate_rule_based_plans(member):
     workout_items = []
     day_templates = session_templates(blueprint["split"])
 
+    # Block overview. Without this the plan describes one week and never says
+    # what changes next week, which is the difference between a workout list and
+    # a programme.
+    block_slot = next((s for s in slots if s["purpose"] == "Training"), None)
+    for index, week in enumerate(programming.BLOCK_WEEKS, start=1):
+        workout_items.append({
+            "day_label": "Programme block · 4 weeks",
+            "slot_time": block_slot["slot_time"] if block_slot else None,
+            "item_type": "recovery",
+            "title": week["name"],
+            "detail": week["rpe"],
+            "rationale": (
+                f"{week['focus']} Block shape follows goal '{goal}' at {level} level: "
+                f"{blueprint['days']} days per week on a {blueprint['split']} split. "
+                "Re-test at the end of week 4, then repeat the block with the new loads "
+                "as the starting point."
+            ),
+            "confidence": "High",
+            "position": index,
+        })
+
     for day_label, exercises in day_templates:
         training_slot = next(
             (s for s in slots if s["purpose"] == "Training"),
@@ -1935,10 +1957,24 @@ def generate_rule_based_plans(member):
             "position": 0,
         })
 
-        # Main exercises
-        for pos, exercise in enumerate(exercises, start=1):
-            detail = f"{blueprint['sets']} sets x {blueprint['reps']} reps, {blueprint['rpe']}, rest {blueprint['rest']}."
-            rationale = f"Primary movement for {day_label.split('·')[-1].strip() if '·' in day_label else day_label}. Selected for goal '{goal}' at {level} level. "
+        # Main exercises. Prescription follows the movement, not one blanket line
+        # for every lift, and each carries the rule for when to add load.
+        seen_exercises = set()
+        pos = 0
+        for exercise in exercises:
+            if exercise in seen_exercises:
+                # The templates repeat some lifts across a day; a member reading
+                # "Leg Press" twice in one session cannot tell them apart.
+                continue
+            seen_exercises.add(exercise)
+            pos += 1
+            prescription = programming.prescribe(exercise, goal, week=1)
+            detail = programming.format_prescription(prescription)
+            rationale = (
+                f"{prescription['role'].title()} movement for {day_label}. "
+                f"Chosen for goal '{goal}' at {level} level. "
+                f"Progression: {prescription['progression']} "
+            )
             if injury_text and injury_text.lower() not in {"none", "no", "na"}:
                 rationale += f"Modified around injury note: {injury_text}. Use pain-free range and trainer clearance."
             else:
@@ -2060,12 +2096,22 @@ def generate_rule_based_plans(member):
                 "position": len(diet_items),
             })
         elif recipe:
+            swaps = programming.swaps_for(
+                recipe["ingredients"],
+                exclusions=parsed_member_choices(member, "food_exclusions")
+                + parsed_member_choices(member, "other_foods_avoided"),
+                dietary_style=member_text(member, "dietary_style"),
+            )
+            detail = f"Ingredients: {recipe['ingredients']}. Macros: {recipe['macros']}"
+            if swaps:
+                # A plan a member cannot eat is a plan they abandon.
+                detail += " Swap: " + "; ".join(swaps) + "."
             diet_items.append({
                 "day_label": day_label,
                 "slot_time": slot["slot_time"],
                 "item_type": "meal",
                 "title": recipe["title"],
-                "detail": f"Ingredients: {recipe['ingredients']}. Macros: {recipe['macros']}",
+                "detail": detail,
                 "rationale": (
                     f"{slot['rationale']} Food preference: {food_preference}. "
                     f"Daily target: {calories} kcal, protein {protein} g."
