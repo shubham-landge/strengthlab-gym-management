@@ -2,112 +2,211 @@
 {% block content %}
 <header class="page-header">
   <div>
-    <p class="eyebrow">Circadian Blueprint</p>
-    <h1>My Personal Training & Nutrition Timeline</h1>
+    <p class="eyebrow">{{ member.name }} · Today's Training</p>
+    <h1>Session Plan</h1>
   </div>
   <div class="actions">
-    <a class="button" href="{{ url_for('member_detail', member_id=member.id) }}">Back to command center</a>
+    <a class="button" href="{{ url_for('member_detail', member_id=member.id) }}">← Member Hub</a>
   </div>
 </header>
 
-{% if not plan or plan.status != 'approved' %}
-<!-- Phase 7 Honest Empty State: Never render draft content to a member -->
-<section class="panel empty-state" style="margin-top: 20px;">
-  <div style="font-size: 3rem; margin-bottom: 8px;">⏳</div>
-  <h2>Your coach is preparing your plan</h2>
-  <p style="max-width: 480px; margin: 0 auto; color: var(--muted);">
-    Your personalized circadian training schedule and nutrition blueprint are currently under review by your fitness coach. Check back soon!
+{% if not plan %}
+<section class="panel empty-state" style="padding: 48px 24px; text-align: center;">
+  <div style="font-size: 2.5rem; margin-bottom: 12px;">📋</div>
+  <h2 style="margin: 0 0 6px 0;">Your coach is preparing your plan</h2>
+  <p class="empty-hint" style="max-width: 480px; margin: 0 auto; color: var(--muted);">
+    Once your trainer reviews and approves your customized workout schedule, your session plan will appear here.
   </p>
 </section>
 {% else %}
-<!-- Active Approved Plan Timeline -->
-<section class="member-hero" style="margin-bottom: 20px;">
-  <div class="member-hero-main">
-    <p class="eyebrow">Daily Schedule Anchors</p>
-    <h2>{{ member.primary_fitness_goal or member.goal or "General Fitness" }}</h2>
-    <div class="hero-tags">
-      <span>Wake: <strong class="tabular-nums">{{ member.wake_time or "07:00" }}</strong></span>
-      <span>Workout: <strong class="tabular-nums">{{ member.workout_time or "18:00" }}</strong></span>
-      <span>Sleep: <strong class="tabular-nums">{{ member.sleep_time or "23:00" }}</strong></span>
+
+<section class="panel" style="margin-bottom: 20px; background: var(--panel-2); border: 1px solid var(--accent-soft);">
+  <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+    <div>
+      <span class="pill good" style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase;">
+        Week {{ plan.week or 2 }} · Build
+      </span>
+      <h2 style="margin: 6px 0 0 0; font-size: 1.25rem; color: var(--ink);">{{ plan.title or "Personalized Training Block" }}</h2>
     </div>
-  </div>
-  <div class="member-hero-side">
-    <span>Approved Version</span>
-    <strong>Active Blueprint</strong>
-    <small>Verified by Coaching Staff</small>
+    <small style="color: var(--muted);">Approved by Coach · Phase 2 Progression</small>
   </div>
 </section>
 
-<section class="panel">
-  <div class="section-title">
-    <h2>Daily Timeline & Protocol</h2>
-    <small>Every session, meal, and supplement timed to your circadian rhythm.</small>
+<div style="display: flex; flex-direction: column; gap: 20px;">
+  {% for entry in grouped_items %}
+  
+  {% if entry.is_superset %}
+  <!-- GROUPED SUPERSET CARD -->
+  <div class="panel" style="border: 2px solid var(--accent); background: var(--panel); padding: 18px; border-radius: var(--radius);">
+    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed var(--line); padding-bottom: 10px; margin-bottom: 16px;">
+      <span class="pill warn" style="font-size: 0.78rem; font-weight: 700;">⚡ SUPERSET {{ entry.group_name }}</span>
+      <small style="color: var(--muted); font-size: 0.75rem;">Perform exercises consecutively with minimum rest between</small>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+      {% for item in entry.item_list %}
+      <div style="background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+          <div>
+            <h3 style="margin: 0 0 4px 0; font-size: 1.1rem; color: var(--ink);">{{ item.title }}</h3>
+            {% if item.load_note %}
+            <span class="pill" style="font-size: 0.72rem; background: var(--accent-soft); color: var(--accent-strong);">
+              🎯 Target Load: {{ item.load_note }}
+            </span>
+            {% endif %}
+          </div>
+          {% if last_logged_perf.get(item.id) %}
+          <div style="font-size: 0.78rem; color: var(--muted); text-align: right;">
+            <span>Last logged performance:</span>
+            <strong style="display: block; color: var(--ink);">{{ last_logged_perf[item.id] }}</strong>
+          </div>
+          {% endif %}
+        </div>
+
+        <!-- LARGE NUMBERS BOXES -->
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px;">
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px; text-align: center;">
+            <span style="font-size: 0.68rem; text-transform: uppercase; font-weight: 700; color: var(--muted); display: block;">SETS</span>
+            <strong style="font-size: 1.6rem; font-weight: 800; color: var(--accent); line-height: 1.1;">{{ item.set_count or item.sets or 3 }}</strong>
+          </div>
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px; text-align: center;">
+            <span style="font-size: 0.68rem; text-transform: uppercase; font-weight: 700; color: var(--muted); display: block;">REPS</span>
+            <strong style="font-size: 1.6rem; font-weight: 800; color: var(--ink); line-height: 1.1;">{{ item.reps or "8-12" }}</strong>
+          </div>
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px; text-align: center;">
+            <span style="font-size: 0.68rem; text-transform: uppercase; font-weight: 700; color: var(--muted); display: block;">REST</span>
+            <strong style="font-size: 1.6rem; font-weight: 800; color: var(--ink); line-height: 1.1;">{{ item.rest_seconds or 90 }}s</strong>
+          </div>
+        </div>
+
+        <!-- LOGGING SET FORM -->
+        <form method="post" action="{{ url_for('log_member_set', member_id=member.id) }}" style="background: var(--panel); border: 1px solid var(--line); padding: 12px; border-radius: var(--radius-sm); margin-bottom: 12px;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="plan_item_id" value="{{ item.id }}">
+          <div style="display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;">
+            <label style="font-size: 0.78rem; font-weight: 600;">Set #
+              <input name="set_number" type="number" value="{{ (logged_sets_by_item.get(item.id)|length) + 1 }}" min="1" max="10" style="width: 60px; padding: 6px; border-radius: var(--radius-sm); border: 1px solid var(--line);">
+            </label>
+            <label style="font-size: 0.78rem; font-weight: 600;">Weight (kg)
+              <input name="load_kg" type="number" step="0.5" placeholder="e.g. 40" required style="width: 90px; padding: 6px; border-radius: var(--radius-sm); border: 1px solid var(--line);">
+            </label>
+            <label style="font-size: 0.78rem; font-weight: 600;">Reps Done
+              <input name="reps_done" type="number" placeholder="e.g. 10" required style="width: 80px; padding: 6px; border-radius: var(--radius-sm); border: 1px solid var(--line);">
+            </label>
+            <button class="button primary" type="submit" style="padding: 6px 14px; font-size: 0.82rem; height: 34px;">✓ Log Set</button>
+          </div>
+        </form>
+
+        <!-- LOGGED SETS SUMMARY -->
+        {% if logged_sets_by_item.get(item.id) %}
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
+          {% for log in logged_sets_by_item[item.id] %}
+          <span class="pill good" style="font-size: 0.75rem;">
+            Set {{ log.set_number }}: {{ log.load_kg or 0 }} kg × {{ log.reps_done }} reps
+          </span>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if item.coach_note %}
+        <div style="background: var(--panel); border-left: 3px solid var(--accent); padding: 8px 12px; margin-bottom: 10px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; font-size: 0.85rem;">
+          💬 <strong>Coach Note:</strong> {{ item.coach_note }}
+        </div>
+        {% endif %}
+
+        <!-- RATIONALE ON TAP -->
+        <details class="rationale-details">
+          <summary>Why this exercise & timing</summary>
+          <p style="margin-top: 6px; font-size: 0.85rem; line-height: 1.5; color: var(--card-text);">{{ item.rationale }}</p>
+        </details>
+      </div>
+      {% endfor %}
+    </div>
   </div>
 
-  <div class="circadian-timeline">
-    {% for item in plan_items %}
-    <div class="timeline-item">
-      <div class="timeline-node"></div>
-      <div class="timeline-content">
-        <!-- Time Node & Type Header -->
-        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-          <div style="display: flex; align-items: center; gap: 10px;">
-            <span class="pill tabular-nums" style="font-size: 0.9rem; font-weight: 700; background: var(--accent-soft); color: var(--accent);">
-              {{ item.slot_time }}
-            </span>
-            <h3 style="margin: 0; font-size: 1.05rem; color: var(--ink);">{{ item.title }}</h3>
-          </div>
+  {% else %}
 
-          <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
-            <span class="pill" style="font-size: 0.72rem; text-transform: uppercase;">{{ item.item_type }}</span>
-            
-            {% set prov_label = item.provenance or 'rule' %}
-            {% if prov_label == 'admin' %}{% set prov_label = 'Coach edited' %}{% endif %}
-            <span class="pill" style="font-size: 0.72rem; background: var(--panel-2); color: var(--muted);">
-              {{ prov_label }}
-            </span>
-          </div>
-        </div>
-
-        <!-- Detail Text -->
-        {% if item.detail %}
-        <p style="margin: 0; font-size: 0.92rem; color: var(--ink); font-weight: 500;">{{ item.detail }}</p>
+  <!-- SINGLE EXERCISE CARD -->
+  {% set item = entry.item_list[0] %}
+  <article class="panel" style="background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px;">
+    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+      <div>
+        <h2 style="margin: 0 0 4px 0; font-size: 1.2rem; color: var(--ink);">{{ item.title }}</h2>
+        {% if item.load_note %}
+        <span class="pill" style="font-size: 0.75rem; background: var(--accent-soft); color: var(--accent-strong);">
+          🎯 Target Load: {{ item.load_note }}
+        </span>
         {% endif %}
+      </div>
+      {% if last_logged_perf.get(item.id) %}
+      <div style="font-size: 0.8rem; color: var(--muted); text-align: right;">
+        <span>Last logged performance:</span>
+        <strong style="display: block; color: var(--ink); font-size: 0.9rem;">{{ last_logged_perf[item.id] }}</strong>
+      </div>
+      {% endif %}
+    </div>
 
-        <!-- Expandable Rationale (Phase 7: visible on demand, not shouting) -->
-        {% if item.rationale %}
-        <details class="rationale-details">
-          <summary>Why this item & timing</summary>
-          <p style="margin: 4px 0 0 0; line-height: 1.4;">{{ item.rationale }}</p>
-        </details>
-        {% endif %}
-
-        <!-- Evidence Grade & Citation -->
-        {% if item.evidence_grade or item.evidence_source %}
-        <div style="font-size: 0.78rem; color: var(--muted); display: flex; align-items: center; gap: 8px; margin-top: 2px;">
-          {% if item.evidence_grade %}
-          <span class="pill good" style="font-size: 0.68rem;">Evidence Grade {{ item.evidence_grade }}</span>
-          {% endif %}
-          {% if item.evidence_source %}
-            <span>Source: 
-              {% if item.source_url %}
-              <a href="{{ item.source_url }}" target="_blank" rel="noopener">{{ item.evidence_source }}</a>
-              {% else %}
-              {{ item.evidence_source }}
-              {% endif %}
-            </span>
-          {% endif %}
-        </div>
-        {% endif %}
-
+    <!-- LARGE NUMBERS BOXES -->
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px;">
+      <div style="background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; text-align: center;">
+        <span style="font-size: 0.7rem; text-transform: uppercase; font-weight: 700; color: var(--muted); display: block;">SETS</span>
+        <strong style="font-size: 1.8rem; font-weight: 800; color: var(--accent); line-height: 1.1;">{{ item.set_count or item.sets or 3 }}</strong>
+      </div>
+      <div style="background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; text-align: center;">
+        <span style="font-size: 0.7rem; text-transform: uppercase; font-weight: 700; color: var(--muted); display: block;">REPS</span>
+        <strong style="font-size: 1.8rem; font-weight: 800; color: var(--ink); line-height: 1.1;">{{ item.reps or "8-12" }}</strong>
+      </div>
+      <div style="background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; text-align: center;">
+        <span style="font-size: 0.7rem; text-transform: uppercase; font-weight: 700; color: var(--muted); display: block;">REST</span>
+        <strong style="font-size: 1.8rem; font-weight: 800; color: var(--ink); line-height: 1.1;">{{ item.rest_seconds or 90 }}s</strong>
       </div>
     </div>
-    {% else %}
-    <div class="empty-state">
-      <p>No items found in this plan timeline.</p>
+
+    <!-- LOGGING SET FORM -->
+    <form method="post" action="{{ url_for('log_member_set', member_id=member.id) }}" style="background: var(--panel-2); border: 1px solid var(--line); padding: 14px; border-radius: var(--radius-sm); margin-bottom: 14px;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="plan_item_id" value="{{ item.id }}">
+      <div style="display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;">
+        <label style="font-size: 0.8rem; font-weight: 600;">Set #
+          <input name="set_number" type="number" value="{{ (logged_sets_by_item.get(item.id)|length) + 1 }}" min="1" max="10" style="width: 60px; padding: 6px; border-radius: var(--radius-sm); border: 1px solid var(--line);">
+        </label>
+        <label style="font-size: 0.8rem; font-weight: 600;">Weight (kg)
+          <input name="load_kg" type="number" step="0.5" placeholder="e.g. 40" required style="width: 100px; padding: 6px; border-radius: var(--radius-sm); border: 1px solid var(--line);">
+        </label>
+        <label style="font-size: 0.8rem; font-weight: 600;">Reps Done
+          <input name="reps_done" type="number" placeholder="e.g. 10" required style="width: 90px; padding: 6px; border-radius: var(--radius-sm); border: 1px solid var(--line);">
+        </label>
+        <button class="button primary" type="submit" style="padding: 6px 16px; font-size: 0.85rem; height: 36px;">✓ Log Set</button>
+      </div>
+    </form>
+
+    <!-- LOGGED SETS SUMMARY -->
+    {% if logged_sets_by_item.get(item.id) %}
+    <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
+      {% for log in logged_sets_by_item[item.id] %}
+      <span class="pill good" style="font-size: 0.78rem;">
+        Set {{ log.set_number }}: {{ log.load_kg or 0 }} kg × {{ log.reps_done }} reps
+      </span>
+      {% endfor %}
     </div>
-    {% endfor %}
-  </div>
-</section>
+    {% endif %}
+
+    {% if item.coach_note %}
+    <div style="background: var(--panel-2); border-left: 3px solid var(--accent); padding: 10px 14px; margin-bottom: 12px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; font-size: 0.88rem;">
+      💬 <strong>Coach Note:</strong> {{ item.coach_note }}
+    </div>
+    {% endif %}
+
+    <!-- RATIONALE ON TAP -->
+    <details class="rationale-details">
+      <summary>Why this exercise & timing</summary>
+      <p style="margin-top: 6px; font-size: 0.88rem; line-height: 1.55; color: var(--card-text);">{{ item.rationale }}</p>
+    </details>
+  </article>
+
+  {% endif %}
+  {% endfor %}
+</div>
+
 {% endif %}
 {% endblock %}
