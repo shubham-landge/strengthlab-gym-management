@@ -17,44 +17,46 @@
     </div>
 
     <nav class="side-nav">
+      <!-- Section: Today -->
+      <div class="nav-section-title">Today</div>
       <a href="{{ url_for('index') }}" {% if request.endpoint == "index" %}class="active"{% endif %}>
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
         Dashboard
       </a>
-
-      {% if current_user.role == "owner" %}
-      <a href="{{ url_for('owner_dashboard') }}" {% if request.endpoint == "owner_dashboard" %}class="active"{% endif %}>
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg>
-        Owner
-      </a>
-      {% endif %}
-
-      {% if current_user.role == "accountant" %}
-      <a href="{{ url_for('accountant_dashboard') }}" {% if request.endpoint == "accountant_dashboard" %}class="active"{% endif %}>
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="10" x2="16" y2="10"/><line x1="8" y1="14" x2="12" y2="14"/></svg>
-        Accounting
-      </a>
-      {% endif %}
-
       {% if current_user.role in ["admin", "owner", "trainer"] %}
+      <a href="{{ url_for('attendance') }}" {% if request.endpoint == "attendance" %}class="active"{% endif %}>
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="m9 16 2 2 4-4"/></svg>
+        Check-ins & Attendance
+      </a>
+      {% endif %}
+
+      <!-- Section: People -->
+      {% if current_user.role in ["admin", "owner", "trainer"] %}
+      <div class="nav-section-title">People</div>
       <a href="{{ url_for('members') }}" {% if request.endpoint in ["members", "member_detail", "edit_member"] %}class="active"{% endif %}>
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         Members
       </a>
+      {% endif %}
+      {% if current_user.role in ["admin", "owner"] %}
+      <a href="{{ url_for('trainers') }}" {% if request.endpoint == "trainers" %}class="active"{% endif %}>
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg>
+        Trainers
+      </a>
+      {% endif %}
+      {% if current_user.role in ["admin", "owner", "trainer"] %}
       <a href="{{ url_for('trainer_assignments') }}" {% if request.endpoint == "trainer_assignments" %}class="active"{% endif %}>
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 1 4 0M9 12h6M9 16h4"/></svg>
         Assignments
       </a>
-      <a href="{{ url_for('attendance') }}" {% if request.endpoint == "attendance" %}class="active"{% endif %}>
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="m9 16 2 2 4-4"/></svg>
-        Attendance
-      </a>
       {% endif %}
 
+      <!-- Section: Money -->
       {% if current_user.role in ["admin", "owner", "accountant"] %}
+      <div class="nav-section-title">Money</div>
       <a href="{{ url_for('payments') }}" {% if request.endpoint == "payments" %}class="active"{% endif %}>
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
-        Payments
+        Payments & Dues
       </a>
       <a href="{{ url_for('reports') }}" {% if request.endpoint == "reports" %}class="active"{% endif %}>
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg>
@@ -62,29 +64,9 @@
       </a>
       {% endif %}
 
-      {% if current_user.role in ["admin", "owner"] %}
-      <a href="{{ url_for('trainers') }}" {% if request.endpoint == "trainers" %}class="active"{% endif %}>
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg>
-        Trainers
-      </a>
-      <a href="{{ url_for('equipment') }}" {% if request.endpoint in ["equipment", "equipment_guide"] %}class="active"{% endif %}>
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-        Equipment
-      </a>
-      <a href="{{ url_for('announcements') }}" {% if request.endpoint == "announcements" %}class="active"{% endif %}>
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-        WhatsApp
-      </a>
-      {% endif %}
-      
-      {% if current_user.role in ["admin", "owner"] %}
-      <a href="{{ url_for('ai_settings') }}" {% if request.endpoint == "ai_settings" %}class="active"{% endif %}>
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        AI Settings
-      </a>
-      {% endif %}
-
+      <!-- Section: Programme -->
       {% if current_user.role in ["admin", "trainer"] %}
+      <div class="nav-section-title">Programme</div>
       <a href="{{ url_for('content_insights') }}" {% if request.endpoint == "content_insights" %}class="active"{% endif %}>
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
         Content Intelligence
@@ -92,6 +74,29 @@
       <a href="{{ url_for('supplements') }}" {% if request.endpoint == "supplements" %}class="active"{% endif %}>
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
         Supplement Library
+      </a>
+      {% endif %}
+
+      <!-- Section: Setup -->
+      {% if current_user.role in ["admin", "owner"] %}
+      <div class="nav-section-title">Setup</div>
+      {% if current_user.role == "owner" %}
+      <a href="{{ url_for('owner_dashboard') }}" {% if request.endpoint == "owner_dashboard" %}class="active"{% endif %}>
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg>
+        Owner Overview
+      </a>
+      {% endif %}
+      <a href="{{ url_for('equipment') }}" {% if request.endpoint in ["equipment", "equipment_guide"] %}class="active"{% endif %}>
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        Equipment
+      </a>
+      <a href="{{ url_for('announcements') }}" {% if request.endpoint == "announcements" %}class="active"{% endif %}>
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        WhatsApp Broadcast
+      </a>
+      <a href="{{ url_for('ai_settings') }}" {% if request.endpoint == "ai_settings" %}class="active"{% endif %}>
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        AI Settings
       </a>
       {% endif %}
     </nav>
@@ -221,6 +226,22 @@
         localStorage.setItem("strengthlab-theme", next);
         applyTheme(next);
       });
+    });
+
+    // Keyboard Shortcuts: '/' focuses search/check-in, 'Esc' closes drawers/modals
+    document.addEventListener("keydown", function(e) {
+      if (e.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) {
+        e.preventDefault();
+        const searchTarget = document.getElementById("global-search-input") || document.querySelector('input[name="q"]');
+        if (searchTarget) { searchTarget.focus(); }
+      } else if (e.key === "Escape") {
+        if (window.location.hash) {
+          window.location.hash = "#";
+        }
+        document.querySelectorAll(".modal-overlay:target, .drawer-shell:target, .mobile-menu-shell:target").forEach(el => {
+          el.style.display = "none";
+        });
+      }
     });
   </script>
 </body>

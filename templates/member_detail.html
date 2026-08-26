@@ -68,7 +68,16 @@
   </article>
 </section>
 
-<section class="today-grid">
+<!-- Member Hub Section Navigation Bar (Part 2 Information Architecture) -->
+<nav class="member-hub-tabs" aria-label="Member Hub Navigation">
+  <a href="#hub-overview" class="hub-tab active">Overview & Today</a>
+  <a href="#hub-plans" class="hub-tab">Plans & Review</a>
+  <a href="#hub-payments" class="hub-tab">Payments & Renewals</a>
+  <a href="#hub-attendance" class="hub-tab">Attendance & Progress</a>
+  <a href="#hub-health" class="hub-tab">Health Questionnaire</a>
+</nav>
+
+<section class="today-grid" id="hub-overview">
   <article class="today-card accent-card">
     <span>Warm-up</span>
     <ul>{% for item in today_plan.warmup %}<li>{{ item }}</li>{% endfor %}</ul>
@@ -191,7 +200,7 @@
 {% endif %}
 
 {% if current_user.role in ["admin", "owner"] %}
-<section class="panel">
+<section id="hub-payments" class="panel">
   <div class="section-title">
     <h2>Membership control</h2>
     <small>Freeze for holds, travel, medical pauses, or owner-approved exceptions.</small>
@@ -224,7 +233,7 @@
 </section>
 {% endif %}
 
-<section class="panel">
+<section id="hub-health" class="panel">
   <div class="section-title"><h2>Fitness and nutrition questionnaire</h2></div>
   {% if current_user.role in ["admin", "trainer"] %}
   <form class="questionnaire-form" method="post" action="{{ url_for('update_profile_questionnaire', member_id=member.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -424,7 +433,7 @@
   {% endif %}
 </section>
 
-<section class="panel">
+<section id="hub-attendance" class="panel">
   <div class="section-title"><h2>Progress tracking</h2></div>
   <div class="stats-grid progress-stats">
     <div class="stat"><span>Latest weight</span><strong>{{ progress_summary.latest.weight_kg if progress_summary.latest and progress_summary.latest.weight_kg else "N/A" }}</strong></div>
@@ -502,9 +511,10 @@
   </div>
 </section>
 
-<section class="two-col">
+<section id="hub-plans" class="two-col">
   <article class="panel">
     <div class="section-title"><h2>Workout routine</h2>
+        <a class="button" href="{{ url_for('plan_review_view', member_id=member.id) }}">Review &amp; approve plans</a>
       {% if current_user.role == "admin" %}
       <form method="post" action="{{ url_for('regenerate', member_id=member.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="link-button">Regenerate</button></form>
       {% endif %}

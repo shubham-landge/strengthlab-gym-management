@@ -4025,15 +4025,54 @@ def index():
         ORDER BY payments.id DESC LIMIT 6
         """
     )
+    due_payments_queue = query_all(
+        """
+        SELECT payments.*, members.name AS member_name, members.phone
+        FROM payments JOIN members ON members.id = payments.member_id
+        WHERE payments.status = 'Due'
+        ORDER BY payments.due_on ASC LIMIT 6
+        """
+    )
+    try:
+        pending_plans = query_all(
+            """
+            SELECT plan_versions.*, members.name AS member_name
+            FROM plan_versions
+            JOIN members ON members.id = plan_versions.member_id
+            WHERE plan_versions.status IN ('draft', 'pending_review')
+            ORDER BY plan_versions.id DESC LIMIT 6
+            """
+        )
+    except sqlite3.OperationalError:
+        pending_plans = []
+
     equipment = query_all("SELECT * FROM equipment ORDER BY maintenance_due ASC")
+    equipment_watch = query_all(
+        "SELECT * FROM equipment WHERE condition_status != 'Good' OR date(maintenance_due) <= date('now', '+14 day') ORDER BY maintenance_due ASC LIMIT 6"
+    )
+    today_checkins = query_all(
+        """
+        SELECT attendance.*, members.name AS member_name
+        FROM attendance JOIN members ON members.id = attendance.member_id
+        WHERE date(attendance.check_in) = date('now')
+        ORDER BY attendance.id DESC LIMIT 6
+        """
+    )
     announcements = query_all("SELECT * FROM announcements ORDER BY id DESC LIMIT 4")
+    all_members = query_all("SELECT id, name, phone FROM members ORDER BY name")
+
     return render_template(
         "dashboard.html",
         stats=dashboard_stats(),
         members=members,
         payments=payments,
+        due_payments_queue=due_payments_queue,
+        pending_plans=pending_plans,
         equipment=equipment,
+        equipment_watch=equipment_watch,
+        today_checkins=today_checkins,
         announcements=announcements,
+        all_members=all_members,
     )
 
 
@@ -4964,6 +5003,12 @@ def attendance():
     if request.method == "POST":
         member_id = request.form["member_id"]
         member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+        if not member:
+            # The dashboard check-in box is free text: if it cannot resolve a name
+            # it posts an empty member_id. Without this guard that wrote an
+            # attendance row belonging to nobody, which then skewed the counts.
+            flash("Pick a member from the list before checking in.", "bad")
+            return redirect(request.referrer or url_for("attendance"))
         if current_user()["role"] == "trainer" and not can_view_member(current_user(), member):
             return redirect(url_for("attendance"))
         action = request.form["action"]
