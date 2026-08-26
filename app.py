@@ -2254,6 +2254,70 @@ def weekly_volume(member_id, plan_version_id):
     return result
 
 
+def propose_next_load(plan_item_id):
+    """Propose the next load for an exercise based on the most recent set log."""
+    log = query_one(
+        """
+        SELECT reps_done, load_kg
+        FROM set_logs
+        WHERE plan_item_id = ?
+        ORDER BY logged_at DESC, id DESC
+        LIMIT 1
+        """,
+        (plan_item_id,),
+    )
+    item = query_one(
+        "SELECT reps, title FROM plan_items WHERE id = ?",
+        (plan_item_id,),
+    )
+    if item is None:
+        return {
+            "plan_item_id": plan_item_id,
+            "last_load_kg": None,
+            "suggested_load_kg": None,
+            "reason": "Plan item not found.",
+        }
+
+    if log is None:
+        return {
+            "plan_item_id": plan_item_id,
+            "last_load_kg": None,
+            "suggested_load_kg": None,
+            "reason": "No sets logged yet.",
+        }
+
+    reps_done = log["reps_done"]
+    last_load_kg = log["load_kg"]
+
+    # Determine prescribed top rep from reps column (e.g. "6-10" -> 10)
+    reps_str = item["reps"] or ""
+    top_rep = None
+    if reps_str:
+        match = re.search(r"(\d+)(?:\s*-\s*(\d+))?", reps_str)
+        if match:
+            top_rep = int(match.group(2)) if match.group(2) else int(match.group(1))
+
+    if top_rep is not None and reps_done is not None and reps_done >= top_rep:
+        increment = 5.0 if "leg press" in (item["title"] or "").lower() else 2.5
+        suggested = (last_load_kg or 0) + increment
+        return {
+            "plan_item_id": plan_item_id,
+            "last_load_kg": last_load_kg,
+            "suggested_load_kg": suggested,
+            "reason": (
+                f"Completed top of rep range ({reps_done} >= {top_rep}). "
+                f"Add {increment} kg."
+            ),
+        }
+
+    return {
+        "plan_item_id": plan_item_id,
+        "last_load_kg": last_load_kg,
+        "suggested_load_kg": last_load_kg,
+        "reason": "Hold current load.",
+    }
+
+
 def generate_rule_based_plans(member):
     from services import circadian_service
     from services.clinical_recommendation_service import get_or_create_health_profile

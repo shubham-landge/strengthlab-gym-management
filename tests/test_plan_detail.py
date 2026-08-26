@@ -548,3 +548,151 @@ def test_weekly_volume_defaults_to_max_20_for_small_muscles():
         assert result[0]["max"] == 20
 
 
+# --- propose_next_load -------------------------------------------------------
+
+def test_propose_next_load_returns_none_when_no_logs():
+    with gym_app.app.app_context():
+        member = gym_app.query_one("SELECT * FROM members LIMIT 1")
+        gym_app.execute(
+            "DELETE FROM plan_items WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute(
+            "DELETE FROM plan_reviews WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute("DELETE FROM plan_versions WHERE member_id = ?", (member["id"],))
+        gym_app.execute(
+            "INSERT INTO plan_versions (member_id, plan_type, status, provenance, generated_at) VALUES (?, 'workout', 'approved', 'rule', datetime('now'))",
+            (member["id"],),
+        )
+        version_id = gym_app.query_one("SELECT last_insert_rowid() AS id")["id"]
+        gym_app.execute(
+            """
+            INSERT INTO plan_items (plan_version_id, day_label, item_type, title, detail, rationale, reps, position)
+            VALUES (?, 'Day 1', 'exercise', 'Bench Press', 'detail', 'Test', '6-10', 0)
+            """,
+            (version_id,),
+        )
+        item_id = gym_app.query_one("SELECT last_insert_rowid() AS id")["id"]
+        result = gym_app.propose_next_load(item_id)
+        assert result["plan_item_id"] == item_id
+        assert result["last_load_kg"] is None
+        assert result["suggested_load_kg"] is None
+        assert "No sets logged yet" in result["reason"]
+
+
+def test_propose_next_load_increases_by_2_5_when_reps_at_top():
+    with gym_app.app.app_context():
+        member = gym_app.query_one("SELECT * FROM members LIMIT 1")
+        gym_app.execute(
+            "DELETE FROM plan_items WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute(
+            "DELETE FROM plan_reviews WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute("DELETE FROM plan_versions WHERE member_id = ?", (member["id"],))
+        gym_app.execute(
+            "INSERT INTO plan_versions (member_id, plan_type, status, provenance, generated_at) VALUES (?, 'workout', 'approved', 'rule', datetime('now'))",
+            (member["id"],),
+        )
+        version_id = gym_app.query_one("SELECT last_insert_rowid() AS id")["id"]
+        gym_app.execute(
+            """
+            INSERT INTO plan_items (plan_version_id, day_label, item_type, title, detail, rationale, reps, position)
+            VALUES (?, 'Day 1', 'exercise', 'Bench Press', 'detail', 'Test', '6-10', 0)
+            """,
+            (version_id,),
+        )
+        item_id = gym_app.query_one("SELECT last_insert_rowid() AS id")["id"]
+        gym_app.execute(
+            """
+            INSERT INTO set_logs (plan_item_id, member_id, set_number, reps_done, load_kg, logged_at)
+            VALUES (?, ?, 1, 10, 80.0, datetime('now'))
+            """,
+            (item_id, member["id"]),
+        )
+        result = gym_app.propose_next_load(item_id)
+        assert result["last_load_kg"] == 80.0
+        assert result["suggested_load_kg"] == 82.5
+        assert "2.5" in result["reason"]
+
+
+def test_propose_next_load_increases_by_5_for_leg_press():
+    with gym_app.app.app_context():
+        member = gym_app.query_one("SELECT * FROM members LIMIT 1")
+        gym_app.execute(
+            "DELETE FROM plan_items WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute(
+            "DELETE FROM plan_reviews WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute("DELETE FROM plan_versions WHERE member_id = ?", (member["id"],))
+        gym_app.execute(
+            "INSERT INTO plan_versions (member_id, plan_type, status, provenance, generated_at) VALUES (?, 'workout', 'approved', 'rule', datetime('now'))",
+            (member["id"],),
+        )
+        version_id = gym_app.query_one("SELECT last_insert_rowid() AS id")["id"]
+        gym_app.execute(
+            """
+            INSERT INTO plan_items (plan_version_id, day_label, item_type, title, detail, rationale, reps, position)
+            VALUES (?, 'Day 1', 'exercise', 'Leg Press', 'detail', 'Test', '6-10', 0)
+            """,
+            (version_id,),
+        )
+        item_id = gym_app.query_one("SELECT last_insert_rowid() AS id")["id"]
+        gym_app.execute(
+            """
+            INSERT INTO set_logs (plan_item_id, member_id, set_number, reps_done, load_kg, logged_at)
+            VALUES (?, ?, 1, 10, 100.0, datetime('now'))
+            """,
+            (item_id, member["id"]),
+        )
+        result = gym_app.propose_next_load(item_id)
+        assert result["last_load_kg"] == 100.0
+        assert result["suggested_load_kg"] == 105.0
+        assert "5" in result["reason"]
+
+
+def test_propose_next_load_holds_when_reps_below_top():
+    with gym_app.app.app_context():
+        member = gym_app.query_one("SELECT * FROM members LIMIT 1")
+        gym_app.execute(
+            "DELETE FROM plan_items WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute(
+            "DELETE FROM plan_reviews WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute("DELETE FROM plan_versions WHERE member_id = ?", (member["id"],))
+        gym_app.execute(
+            "INSERT INTO plan_versions (member_id, plan_type, status, provenance, generated_at) VALUES (?, 'workout', 'approved', 'rule', datetime('now'))",
+            (member["id"],),
+        )
+        version_id = gym_app.query_one("SELECT last_insert_rowid() AS id")["id"]
+        gym_app.execute(
+            """
+            INSERT INTO plan_items (plan_version_id, day_label, item_type, title, detail, rationale, reps, position)
+            VALUES (?, 'Day 1', 'exercise', 'Bench Press', 'detail', 'Test', '6-10', 0)
+            """,
+            (version_id,),
+        )
+        item_id = gym_app.query_one("SELECT last_insert_rowid() AS id")["id"]
+        gym_app.execute(
+            """
+            INSERT INTO set_logs (plan_item_id, member_id, set_number, reps_done, load_kg, logged_at)
+            VALUES (?, ?, 1, 8, 80.0, datetime('now'))
+            """,
+            (item_id, member["id"]),
+        )
+        result = gym_app.propose_next_load(item_id)
+        assert result["last_load_kg"] == 80.0
+        assert result["suggested_load_kg"] == 80.0
+        assert "Hold" in result["reason"]
+
+
