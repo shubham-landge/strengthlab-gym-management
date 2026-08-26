@@ -2,168 +2,250 @@
 {% block content %}
 <header class="page-header">
   <div>
-    <p class="eyebrow">Trainer Review Portal</p>
-    <h1>Review Plan: {{ member.name }}</h1>
+    <p class="eyebrow">Coach Programme Sheet</p>
+    <h1>Review & Edit Plan: {{ member.name }}</h1>
   </div>
   <div class="actions">
-    <a class="button" href="{{ url_for('member_detail', member_id=member.id) }}">Back to Member Profile</a>
+    <a class="button" href="{{ url_for('member_detail', member_id=member.id) }}">← Member Hub</a>
   </div>
 </header>
 
-<!-- Biometric & Circadian Anchors Hero -->
-<section class="member-hero" style="margin-bottom: 20px;">
-  <div class="member-hero-main">
-    <p class="eyebrow">Circadian & Biometric Summary</p>
-    <h2>{{ member.primary_fitness_goal or member.goal or "General Fitness" }}</h2>
-    <div class="hero-tags">
-      <span>Wake: <strong class="tabular-nums">{{ member.wake_time or "07:00 (Default)" }}</strong></span>
-      <span>Workout: <strong class="tabular-nums">{{ member.workout_time or "18:00 (Default)" }}</strong></span>
-      <span>Sleep: <strong class="tabular-nums">{{ member.sleep_time or "23:00 (Default)" }}</strong></span>
-      <span>{{ member.dietary_style or "Standard Diet" }}</span>
-    </div>
-  </div>
-  <div class="member-hero-side">
-    <span>Pending review</span>
-    <strong>{{ plans|length }} plan{{ '' if plans|length == 1 else 's' }}</strong>
-    <small>{{ approved|length }} currently live</small>
-  </div>
-</section>
-
-{% for plan_block in plans %}
-{% set plan = plan_block.version %}
-<section class="panel" style="margin-bottom:20px;">
-  <div class="section-title">
-    <h2>{{ plan.plan_type|title }} plan
-      <span class="pill {% if plan.status == 'blocked' %}bad{% elif plan.status == 'approved' %}good{% else %}warn{% endif %}">{{ plan.status|replace('_',' ') }}</span>
-    </h2>
-    <small>
-      {{ plan_block.item_count }} item{{ '' if plan_block.item_count == 1 else 's' }} ·
-      {% if plan.provenance == 'ai' %}AI{% if plan.model %} · {{ plan.model }}{% endif %}{% elif plan.provenance == 'admin' %}edited by coach{% else %}built-in rule engine{% endif %}
-      {% if approved.get(plan.plan_type) %} · replaces the live version{% else %} · nothing live yet{% endif %}
-    </small>
-  </div>
-
-  {% if plan.blocked_reason %}
-  <div class="notice bad">
-    <strong>Blocked — this plan cannot be approved.</strong>
-    <p style="margin:6px 0 0;">{{ plan.blocked_reason }}</p>
-    <p style="margin:6px 0 0;">Correct the health questionnaire or refer the member to a clinician, then generate again. No one can override this, including an admin or owner.</p>
-  </div>
-  {% else %}
-  <div class="plan-approve-bar">
-    <div>
-      <strong>Ready for approval</strong>
-      <small>Members see nothing until you approve. Every item below shows why it was chosen.</small>
-    </div>
-    <div class="plan-approve-actions">
-      <form method="post" action="{{ url_for('approve_plan_version', member_id=member.id, version_id=plan.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <input type="hidden" name="note" value="Approved from review screen">
-        <button class="button primary" type="submit">Approve &amp; publish {{ plan.plan_type }}</button>
-      </form>
-      <form method="post" action="{{ url_for('reject_plan_version', member_id=member.id, version_id=plan.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <input name="note" placeholder="Reason (required)" required>
-        <button class="button" type="submit">Reject</button>
-      </form>
-    </div>
-  </div>
-  {% endif %}
-
-  {% if plan_block.items %}
-  {% for day_label, items in plan_block.items_by_day.items() %}
-  <div class="plan-day">
-    <h3>{{ day_label }}</h3>
-    {% for item in items %}
-    <div class="plan-item">
-      <div class="plan-item-head">
-        <span class="pill tabular-nums">{{ item.slot_time or "--:--" }}</span>
-        <strong>{{ item.title }}</strong>
-        <span class="pill">{{ item.item_type }}</span>
-        {% if item.confidence %}
-        <span class="pill {% if item.confidence == 'High' %}good{% elif item.confidence == 'Medium' %}warn{% else %}bad{% endif %}">{{ item.confidence }} confidence</span>
-        {% endif %}
-        <span class="pill">{{ 'AI' if item.provenance == 'ai' else ('coach' if item.provenance == 'admin' else 'rule') }}</span>
-      </div>
-      {% if item.detail %}<p class="plan-item-detail">{{ item.detail }}</p>{% endif %}
-      <div class="plan-item-why">
-        <span class="why-label">Why this, and why now</span>
-        <p>{{ item.rationale }}</p>
-        {% if item.evidence_source %}
-        <p class="plan-evidence">
-          Evidence {{ item.evidence_grade or '—' }} ·
-          {% if item.source_url %}<a href="{{ item.source_url }}" target="_blank" rel="noopener">{{ item.evidence_source }}</a>{% else %}{{ item.evidence_source }}{% endif %}
-        </p>
-        {% endif %}
-      </div>
-      <details class="plan-item-edit">
-        <summary>Edit this item</summary>
-        <form class="grid-form" method="post" action="{{ url_for('edit_plan_item', member_id=member.id, version_id=plan.id, item_id=item.id) }}">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <label>Title<input name="title" value="{{ item.title }}"></label>
-          <label>Detail<input name="detail" value="{{ item.detail or '' }}"></label>
-          <label class="span-3">Rationale<textarea name="rationale" rows="3">{{ item.rationale }}</textarea></label>
-          <button class="button" type="submit">Save item</button>
-        </form>
-      </details>
-    </div>
-    {% endfor %}
-  </div>
-  {% endfor %}
-  {% else %}
-  <p class="empty-hint">This version has no items, which should not happen. Generate again.</p>
-  {% endif %}
-</section>
-{% endfor %}
-
 {% if not plans %}
-<section class="panel">
-  <div class="empty-state">
-    <p>No plan is waiting for review.</p>
-    <p class="empty-hint">Generating builds a plan from this member's goal, health profile and
-    their wake, training and sleep times, then runs it through the clinical safety check.
-    Nothing reaches the member until you approve it.</p>
-    <form method="post" action="{{ url_for('regenerate', member_id=member.id) }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <button class="button primary" type="submit">Generate plan</button>
-    </form>
-    {% if approved %}
-    <p class="empty-hint">{{ approved|length }} approved plan{{ '' if approved|length == 1 else 's' }} already live for this member.</p>
-    {% endif %}
-  </div>
+<section class="panel empty-state">
+  <h2>No plan is waiting for review for {{ member.name }}</h2>
+  <p class="empty-hint">Generating a fresh workout or diet plan will place it in this review queue.</p>
+  <form method="post" action="{{ url_for('generate_member_plan_draft', member_id=member.id) }}" style="margin-top: 14px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="button primary" type="submit">Generate plan</button>
+  </form>
 </section>
 {% endif %}
 
-<section class="panel">
-  <div class="section-title"><h2>Generate again</h2>
-    <small>Creates a fresh draft. The live plan keeps running until you approve the new one.</small></div>
-  <form method="post" action="{{ url_for('regenerate', member_id=member.id) }}">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <button class="button" type="submit">Regenerate draft</button>
-  </form>
+{% for plan in plans %}
+{% set version = plan.version %}
+
+<!-- BLOCKED PLAN WARNING BANNER -->
+{% if version.status == "blocked" %}
+<div class="blocked-plan-banner" style="margin-bottom: 20px;">
+  <strong>⚠️ Clinical Safety Gate Triggered — Plan Blocked</strong>
+  <p style="margin: 4px 0 0 0; font-size: 0.88rem;">
+    {{ version.blocked_reason or "Medical contraindication or clinical safety restriction flagged." }}
+  </p>
+  <small style="margin-top: 6px; display: block;">This plan cannot be approved until contraindications are cleared by staff.</small>
+</div>
+{% endif %}
+
+<!-- WEEKLY VOLUME CHART Visualizer (Part 3) -->
+<section class="panel" style="margin-bottom: 20px; background: var(--panel-2);">
+  <div class="section-title">
+    <h2>Weekly Sets Per Muscle Group (Volume Tool)</h2>
+    <small>Productive volume target ranges (10–20+ sets/week) per muscle group.</small>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 14px;">
+    {% for vol in plan.weekly_volume %}
+    <div style="background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <strong style="text-transform: capitalize; font-size: 0.88rem; color: var(--ink);">{{ vol.muscle_group }}</strong>
+        <span class="pill {% if vol.status == 'optimal' %}good{% elif vol.status == 'under' %}warn{% elif vol.status == 'over' %}bad{% else %}muted{% endif %}" style="font-size: 0.68rem; text-transform: uppercase;">
+          {{ vol.sets }} sets ({{ vol.status }})
+        </span>
+      </div>
+      <small style="color: var(--muted); font-size: 0.72rem; display: block; margin-bottom: 6px;">Target range: {{ vol.min }}–{{ vol.max }} sets</small>
+      <div style="width: 100%; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden;">
+        {% set pct = ((vol.sets / vol.max) * 100) if vol.max else 0 %}
+        {% set bar_pct = 100 if pct > 100 else pct %}
+        <div style="height: 100%; width: {{ bar_pct }}%; background: {% if vol.status == 'over' %}var(--bad){% elif vol.status == 'under' %}var(--warn){% elif vol.status == 'optimal' %}var(--good){% else %}var(--muted){% endif %}; transition: width 0.3s ease;"></div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
 </section>
 
-<style>
-.modal-overlay {
-  display: none;
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0,0,0,0.5);
-  backdrop-filter: blur(2px);
-  z-index: 1000;
-  justify-content: center;
-  align-items: center;
-}
-.modal-overlay:target {
-  display: flex;
-}
-.modal-content {
-  width: 90%;
-  max-width: 550px;
-  padding: 24px;
-  border-radius: var(--radius);
-  max-height: 90vh;
-  overflow-y: auto;
-}
-</style>
+<!-- DENSE ADMIN PROGRAMME SHEET TABLE -->
+<section class="table-wrap" style="margin-bottom: 30px;">
+  <div class="section-title table-title" style="display: flex; justify-content: space-between; align-items: center;">
+    <div>
+      <h2>{{ version.plan_type|capitalize }} plan</h2>
+      <small>Status: {{ version.status|title }} · Every cell editable in place.</small>
+    </div>
+    <a class="button primary" href="#add-exercise-modal-{{ version.id }}" style="font-size: 0.8rem;">+ Add Exercise</a>
+  </div>
+
+  <div class="scroll-x">
+    <table>
+      <thead>
+        <tr>
+          <th>Day</th>
+          <th>Exercise Title</th>
+          <th>Sets</th>
+          <th>Reps</th>
+          <th>RPE</th>
+          <th>Tempo</th>
+          <th>Rest (s)</th>
+          <th>Load Note</th>
+          <th>Muscle Group</th>
+          <th>Superset</th>
+          <th>Rationale</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in plan.items_list %}
+        <tr>
+          <td data-label="Day">
+            <form method="post" action="{{ url_for('update_plan_item_cell', member_id=member.id, item_id=item.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="field" value="day_label">
+              <input name="value" value="{{ item.day_label or 'Day 1' }}" onchange="this.form.submit()" style="width: 70px; padding: 4px; border: 1px solid var(--line); border-radius: 4px; font-size: 0.8rem;">
+            </form>
+          </td>
+          <td data-label="Title">
+            <form method="post" action="{{ url_for('update_plan_item_cell', member_id=member.id, item_id=item.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="field" value="title">
+              <input name="value" value="{{ item.title }}" onchange="this.form.submit()" style="width: 140px; padding: 4px; border: 1px solid var(--line); border-radius: 4px; font-weight: 600; font-size: 0.82rem;">
+            </form>
+          </td>
+          <td data-label="Sets">
+            <form method="post" action="{{ url_for('update_plan_item_cell', member_id=member.id, item_id=item.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="field" value="sets">
+              <input name="value" value="{{ item.sets or '3' }}" onchange="this.form.submit()" style="width: 50px; padding: 4px; border: 1px solid var(--line); border-radius: 4px; font-size: 0.8rem;">
+            </form>
+          </td>
+          <td data-label="Reps">
+            <form method="post" action="{{ url_for('update_plan_item_cell', member_id=member.id, item_id=item.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="field" value="reps">
+              <input name="value" value="{{ item.reps or '8-12' }}" onchange="this.form.submit()" style="width: 65px; padding: 4px; border: 1px solid var(--line); border-radius: 4px; font-size: 0.8rem;">
+            </form>
+          </td>
+          <td data-label="RPE">
+            <form method="post" action="{{ url_for('update_plan_item_cell', member_id=member.id, item_id=item.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="field" value="rpe">
+              <input name="value" value="{{ item.rpe or '7-8' }}" onchange="this.form.submit()" style="width: 55px; padding: 4px; border: 1px solid var(--line); border-radius: 4px; font-size: 0.8rem;">
+            </form>
+          </td>
+          <td data-label="Tempo">
+            <form method="post" action="{{ url_for('update_plan_item_cell', member_id=member.id, item_id=item.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="field" value="tempo">
+              <input name="value" value="{{ item.tempo or '2-0-1-0' }}" onchange="this.form.submit()" style="width: 65px; padding: 4px; border: 1px solid var(--line); border-radius: 4px; font-size: 0.8rem;">
+            </form>
+          </td>
+          <td data-label="Rest">
+            <form method="post" action="{{ url_for('update_plan_item_cell', member_id=member.id, item_id=item.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="field" value="rest_seconds">
+              <input name="value" value="{{ item.rest_seconds or 90 }}" onchange="this.form.submit()" style="width: 55px; padding: 4px; border: 1px solid var(--line); border-radius: 4px; font-size: 0.8rem;">
+            </form>
+          </td>
+          <td data-label="Load Note">
+            <form method="post" action="{{ url_for('update_plan_item_cell', member_id=member.id, item_id=item.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="field" value="load_note">
+              <input name="value" value="{{ item.load_note or '' }}" placeholder="Load note" onchange="this.form.submit()" style="width: 90px; padding: 4px; border: 1px solid var(--line); border-radius: 4px; font-size: 0.8rem;">
+            </form>
+          </td>
+          <td data-label="Muscle">
+            <form method="post" action="{{ url_for('update_plan_item_cell', member_id=member.id, item_id=item.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="field" value="muscle_group">
+              <input name="value" value="{{ item.muscle_group or 'full body' }}" onchange="this.form.submit()" style="width: 80px; padding: 4px; border: 1px solid var(--line); border-radius: 4px; font-size: 0.8rem;">
+            </form>
+          </td>
+          <td data-label="Superset">
+            <form method="post" action="{{ url_for('update_plan_item_cell', member_id=member.id, item_id=item.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="field" value="superset_group">
+              <input name="value" value="{{ item.superset_group or '' }}" placeholder="None" onchange="this.form.submit()" style="width: 50px; padding: 4px; border: 1px solid var(--line); border-radius: 4px; font-size: 0.8rem;">
+            </form>
+          </td>
+          <td data-label="Rationale" style="font-size: 0.8rem; max-width: 200px;">
+            <details>
+              <summary>Why this, and why now</summary>
+              <p style="margin-top: 4px; font-size: 0.78rem;">{{ item.rationale }}</p>
+            </details>
+          </td>
+          <td data-label="Actions" class="actions-cell">
+            <form method="post" action="{{ url_for('delete_plan_item', member_id=member.id, item_id=item.id) }}" style="display: inline;">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="button warn" type="submit" style="padding: 3px 8px; font-size: 0.72rem;">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="12" class="empty">No exercise items in this plan version yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- APPROVE / REJECT BAR (Blocked Plans Render NO Approve Control) -->
+  <div class="plan-approve-bar" style="margin-top: 16px;">
+    <div>
+      <strong>Decision for {{ version.plan_type|capitalize }} plan (v{{ version.version_number or 1 }})</strong>
+      <small>Approving publishes this plan to the member's session card view.</small>
+    </div>
+    <div class="plan-approve-actions">
+      {% if version.status != "blocked" %}
+      <form method="post" action="{{ url_for('approve_plan_version', member_id=member.id, version_id=version.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input name="note" placeholder="Optional approval note" style="padding: 4px 8px; font-size: 0.8rem;">
+        <button class="button primary" type="submit">Approve &amp; publish {{ version.plan_type }}</button>
+      </form>
+      {% endif %}
+      <form method="post" action="{{ url_for('reject_plan_version', member_id=member.id, version_id=version.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input name="note" placeholder="Rejection reason" style="padding: 4px 8px; font-size: 0.8rem;">
+        <button class="button warn" type="submit">Reject Plan</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+<!-- ADD EXERCISE MODAL -->
+<section class="drawer-shell" id="add-exercise-modal-{{ version.id }}">
+  <a class="drawer-backdrop" href="#" aria-label="Close modal"></a>
+  <aside class="payment-drawer" style="max-width: 520px;" aria-label="Add exercise">
+    <div class="section-title">
+      <h2>Add Exercise to {{ version.plan_type|capitalize }} plan</h2>
+      <a class="button" href="#">Close</a>
+    </div>
+    <form method="post" action="{{ url_for('add_plan_item_to_version', member_id=member.id) }}" style="display: flex; flex-direction: column; gap: 12px; margin-top: 14px;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="plan_version_id" value="{{ version.id }}">
+      <label>Select Exercise or Type Title
+        <input name="title" list="movement-catalogue-list" placeholder="e.g. Incline Dumbbell Press" required>
+        <datalist id="movement-catalogue-list">
+          {% for m in movements_list %}
+          <option value="{{ m.name }}">{{ m.name }} ({{ m.primary_muscle }})</option>
+          {% endfor %}
+        </datalist>
+      </label>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <label>Day <input name="day_label" value="Day 1"></label>
+        <label>Muscle Group <input name="muscle_group" placeholder="e.g. chest"></label>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+        <label>Sets <input name="sets" value="3"></label>
+        <label>Reps <input name="reps" value="8-12"></label>
+        <label>RPE <input name="rpe" value="7-8"></label>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <label>Tempo <input name="tempo" value="2-0-1-0"></label>
+        <label>Rest (s) <input name="rest_seconds" type="number" value="90"></label>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <label>Load Note <input name="load_note" placeholder="e.g. 70% 1RM"></label>
+        <label>Superset Group <input name="superset_group" placeholder="e.g. A1"></label>
+      </div>
+      <button class="button primary" type="submit" style="margin-top: 10px;">Add Exercise to Sheet</button>
+    </form>
+  </aside>
+</section>
+
+{% endfor %}
 {% endblock %}

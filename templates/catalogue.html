@@ -1,0 +1,306 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">Content & Exercise Library</p>
+    <h1>Catalogue Library</h1>
+  </div>
+  <div class="actions">
+    {% if tab == "foods" %}
+    <a class="button primary" href="#add-food-modal">+ Add Food</a>
+    {% else %}
+    <a class="button primary" href="#add-movement-modal">+ Add Movement</a>
+    {% endif %}
+  </div>
+</header>
+
+<div class="notice info" style="margin-bottom: 20px; background: var(--panel-2); border: 1px solid var(--line);">
+  💡 Edits and deactivations persist across app restarts because database seeding uses <code>INSERT OR IGNORE</code>.
+</div>
+
+<section class="panel" style="margin-bottom: 20px; padding: 14px 18px;">
+  <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px;">
+    <nav class="member-hub-tabs" style="margin-bottom: 0; border-bottom: none; padding: 0;">
+      <a href="{{ url_for('catalogue', tab='movements', q=q) }}" class="hub-tab {% if tab != 'foods' %}active{% endif %}">Movements ({{ movements|length }})</a>
+      <a href="{{ url_for('catalogue', tab='foods', q=q) }}" class="hub-tab {% if tab == 'foods' %}active{% endif %}">Foods ({{ foods|length }})</a>
+    </nav>
+    <form method="get" action="{{ url_for('catalogue') }}" style="display: flex; gap: 8px; margin: 0;">
+      <input type="hidden" name="tab" value="{{ tab }}">
+      <input type="search" name="q" value="{{ q }}" placeholder="Search {{ tab }}..." style="padding: 6px 12px; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--input-bg); color: var(--ink);">
+      <button class="button" type="submit">Filter</button>
+      {% if q %}
+      <a class="button" href="{{ url_for('catalogue', tab=tab) }}">Clear</a>
+      {% endif %}
+    </form>
+  </div>
+</section>
+
+{% if tab != 'foods' %}
+<!-- MOVEMENTS TABLE -->
+<section class="table-wrap">
+  <div class="section-title table-title">
+    <h2>Exercise Movements</h2>
+    <small>Master movement library prescribing workouts across levels.</small>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Movement Name</th>
+        <th>Pattern</th>
+        <th>Role</th>
+        <th>Target Muscle</th>
+        <th>Equipment</th>
+        <th>Level</th>
+        <th>Cues / Notes</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in movements %}
+      <tr style="{% if not item.active %}opacity: 0.6;{% endif %}">
+        <td data-label="Status">
+          <span class="pill {% if item.active %}good{% else %}warn{% endif %}">
+            {{ "Active" if item.active else "Deactivated" }}
+          </span>
+        </td>
+        <td data-label="Name"><strong>{{ item.name }}</strong></td>
+        <td data-label="Pattern">{{ item.movement_pattern or "—" }}</td>
+        <td data-label="Role">{{ item.role or "—" }}</td>
+        <td data-label="Target Muscle">{{ item.primary_muscle or "—" }}</td>
+        <td data-label="Equipment">{{ item.equipment or "—" }}</td>
+        <td data-label="Level">{{ item.level or "—" }}</td>
+        <td data-label="Cues" style="max-width: 240px; font-size: 0.82rem;">{{ item.cues or item.contraindications or "—" }}</td>
+        <td data-label="Actions" class="actions-cell">
+          <a class="button" href="#edit-movement-modal-{{ item.id }}" style="padding: 4px 8px; font-size: 0.75rem;">Edit</a>
+          <form method="post" action="{{ url_for('toggle_movement', movement_id=item.id) }}" style="display: inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="button {% if item.active %}warn{% else %}primary{% endif %}" type="submit" style="padding: 4px 8px; font-size: 0.75rem;">
+              {{ "Deactivate" if item.active else "Activate" }}
+            </button>
+          </form>
+        </td>
+      </tr>
+
+      <!-- Edit Movement Modal -->
+      <section class="drawer-shell" id="edit-movement-modal-{{ item.id }}">
+        <a class="drawer-backdrop" href="#" aria-label="Close modal"></a>
+        <aside class="payment-drawer" style="max-width: 520px;" aria-label="Edit movement">
+          <div class="section-title">
+            <h2>Edit Movement: {{ item.name }}</h2>
+            <a class="button" href="#">Close</a>
+          </div>
+          <form method="post" action="{{ url_for('edit_movement', movement_id=item.id) }}" style="display: flex; flex-direction: column; gap: 12px; margin-top: 14px;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label>Name <input name="name" value="{{ item.name }}" required></label>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <label>Pattern <input name="movement_pattern" value="{{ item.movement_pattern or '' }}"></label>
+              <label>Role <input name="role" value="{{ item.role or '' }}"></label>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <label>Target Muscle <input name="primary_muscle" value="{{ item.primary_muscle or '' }}"></label>
+              <label>Secondary Muscles <input name="secondary_muscles" value="{{ item.secondary_muscles or '' }}"></label>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <label>Equipment <input name="equipment" value="{{ item.equipment or '' }}"></label>
+              <label>Level <input name="level" value="{{ item.level or '' }}"></label>
+            </div>
+            <label>Contraindications <input name="contraindications" value="{{ item.contraindications or '' }}"></label>
+            <label>Cues <textarea name="cues" rows="2">{{ item.cues or '' }}</textarea></label>
+            <label>Regression <input name="regression" value="{{ item.regression or '' }}"></label>
+            <label>Progression <input name="progression" value="{{ item.progression or '' }}"></label>
+            <button class="button primary" type="submit" style="margin-top: 10px;">Save Movement</button>
+          </form>
+        </aside>
+      </section>
+      {% else %}
+      <tr><td colspan="9" class="empty">No movements found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<!-- Add Movement Modal -->
+<section class="drawer-shell" id="add-movement-modal">
+  <a class="drawer-backdrop" href="#" aria-label="Close modal"></a>
+  <aside class="payment-drawer" style="max-width: 520px;" aria-label="Add movement">
+    <div class="section-title">
+      <h2>Add New Movement</h2>
+      <a class="button" href="#">Close</a>
+    </div>
+    <form method="post" action="{{ url_for('add_movement') }}" style="display: flex; flex-direction: column; gap: 12px; margin-top: 14px;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Name <input name="name" placeholder="e.g. Barbell Hack Squat" required></label>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <label>Pattern <input name="movement_pattern" placeholder="e.g. Squat"></label>
+        <label>Role <input name="role" placeholder="e.g. Compound"></label>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <label>Target Muscle <input name="primary_muscle" placeholder="e.g. quads"></label>
+        <label>Secondary Muscles <input name="secondary_muscles" placeholder="e.g. glutes"></label>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <label>Equipment <input name="equipment" placeholder="e.g. Barbell"></label>
+        <label>Level <input name="level" placeholder="e.g. Intermediate"></label>
+      </div>
+      <label>Contraindications <input name="contraindications" placeholder="e.g. Patellar tendinopathy"></label>
+      <label>Cues <textarea name="cues" rows="2" placeholder="Form cues"></textarea></label>
+      <label>Regression <input name="regression" placeholder="e.g. Leg Press"></label>
+      <label>Progression <input name="progression" placeholder="e.g. Front Squat"></label>
+      <button class="button primary" type="submit" style="margin-top: 10px;">Add Movement</button>
+    </form>
+  </aside>
+</section>
+
+{% else %}
+
+<!-- FOODS TABLE -->
+<section class="table-wrap">
+  <div class="section-title table-title">
+    <h2>Food Library</h2>
+    <small>Nutritional database with macro breakdown and provenance sources.</small>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Food Name</th>
+        <th>Category</th>
+        <th>Macros (per 100g)</th>
+        <th>Flags</th>
+        <th>Exchange Group</th>
+        <th>Source</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for food in foods %}
+      <tr style="{% if not food.active %}opacity: 0.6;{% endif %}">
+        <td data-label="Status">
+          <span class="pill {% if food.active %}good{% else %}warn{% endif %}">
+            {{ "Active" if food.active else "Deactivated" }}
+          </span>
+        </td>
+        <td data-label="Name">
+          <strong>{{ food.name }}</strong>
+          {% if food.discrepancy_warning %}
+          <div style="margin-top: 2px;">
+            <span class="pill warn" style="font-size: 0.68rem;" title="Stated: {{ food.kcal_100g }} kcal | Calculated from macros: {{ food.macro_kcal }} kcal">
+              ⚠️ Macro discrepancy (~{{ food.macro_kcal }} kcal)
+            </span>
+          </div>
+          {% endif %}
+        </td>
+        <td data-label="Category">{{ food.category or "—" }}</td>
+        <td data-label="Macros">
+          <div style="font-size: 0.85rem;">
+            <strong>{{ food.kcal_100g }} kcal</strong>
+            <small style="color: var(--muted); display: block;">P: {{ food.protein_100g }}g | C: {{ food.carb_100g }}g | F: {{ food.fat_100g }}g</small>
+          </div>
+        </td>
+        <td data-label="Flags">
+          {% if food.vegetarian %}<span class="pill good" style="font-size: 0.68rem;">Veg</span>{% endif %}
+          {% if food.vegan %}<span class="pill good" style="font-size: 0.68rem;">Vegan</span>{% endif %}
+          {% if food.allergens %}<small style="color: var(--warn); display: block;">{{ food.allergens }}</small>{% endif %}
+        </td>
+        <td data-label="Exchange Group">{{ food.exchange_group or "—" }} ({{ food.typical_portion_g }}g {{ food.portion_label or 'g' }})</td>
+        <td data-label="Source">
+          <span class="pill" style="font-size: 0.72rem; background: var(--panel-2); border: 1px solid var(--line);">
+            {{ food.source or "Unknown" }}
+          </span>
+        </td>
+        <td data-label="Actions" class="actions-cell">
+          <a class="button" href="#edit-food-modal-{{ food.id }}" style="padding: 4px 8px; font-size: 0.75rem;">Edit</a>
+          <form method="post" action="{{ url_for('toggle_food', food_id=food.id) }}" style="display: inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="button {% if food.active %}warn{% else %}primary{% endif %}" type="submit" style="padding: 4px 8px; font-size: 0.75rem;">
+              {{ "Deactivate" if food.active else "Activate" }}
+            </button>
+          </form>
+        </td>
+      </tr>
+
+      <!-- Edit Food Modal -->
+      <section class="drawer-shell" id="edit-food-modal-{{ food.id }}">
+        <a class="drawer-backdrop" href="#" aria-label="Close modal"></a>
+        <aside class="payment-drawer" style="max-width: 520px;" aria-label="Edit food">
+          <div class="section-title">
+            <h2>Edit Food: {{ food.name }}</h2>
+            <a class="button" href="#">Close</a>
+          </div>
+          <form method="post" action="{{ url_for('edit_food', food_id=food.id) }}" style="display: flex; flex-direction: column; gap: 12px; margin-top: 14px;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label>Food Name <input name="name" value="{{ food.name }}" required></label>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <label>Category <input name="category" value="{{ food.category or '' }}"></label>
+              <label>Source <input name="source" value="{{ food.source or '' }}" required></label>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px;">
+              <label>Calories <input name="kcal_100g" type="number" step="0.1" value="{{ food.kcal_100g }}"></label>
+              <label>Protein (g) <input name="protein_100g" type="number" step="0.1" value="{{ food.protein_100g }}"></label>
+              <label>Carb (g) <input name="carb_100g" type="number" step="0.1" value="{{ food.carb_100g }}"></label>
+              <label>Fat (g) <input name="fat_100g" type="number" step="0.1" value="{{ food.fat_100g }}"></label>
+            </div>
+            <div style="display: flex; gap: 20px; margin: 4px 0;">
+              <label class="check"><input type="checkbox" name="vegetarian" {% if food.vegetarian %}checked{% endif %}> Vegetarian</label>
+              <label class="check"><input type="checkbox" name="vegan" {% if food.vegan %}checked{% endif %}> Vegan</label>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <label>Exchange Group <input name="exchange_group" value="{{ food.exchange_group or '' }}"></label>
+              <label>Allergens <input name="allergens" value="{{ food.allergens or '' }}"></label>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <label>Portion (g) <input name="typical_portion_g" type="number" step="1" value="{{ food.typical_portion_g or 100 }}"></label>
+              <label>Portion Label <input name="portion_label" value="{{ food.portion_label or '' }}"></label>
+            </div>
+            <button class="button primary" type="submit" style="margin-top: 10px;">Save Food</button>
+          </form>
+        </aside>
+      </section>
+      {% else %}
+      <tr><td colspan="8" class="empty">No foods found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<!-- Add Food Modal -->
+<section class="drawer-shell" id="add-food-modal">
+  <a class="drawer-backdrop" href="#" aria-label="Close modal"></a>
+  <aside class="payment-drawer" style="max-width: 520px;" aria-label="Add food">
+    <div class="section-title">
+      <h2>Add New Food</h2>
+      <a class="button" href="#">Close</a>
+    </div>
+    <form method="post" action="{{ url_for('add_food') }}" style="display: flex; flex-direction: column; gap: 12px; margin-top: 14px;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Food Name <input name="name" placeholder="e.g. Greek Yogurt 0%" required></label>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <label>Category <input name="category" placeholder="e.g. Dairy / Protein"></label>
+        <label>Source <input name="source" placeholder="e.g. USDA / Brand label" required></label>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px;">
+        <label>Calories <input name="kcal_100g" type="number" step="0.1" value="0"></label>
+        <label>Protein (g) <input name="protein_100g" type="number" step="0.1" value="0"></label>
+        <label>Carb (g) <input name="carb_100g" type="number" step="0.1" value="0"></label>
+        <label>Fat (g) <input name="fat_100g" type="number" step="0.1" value="0"></label>
+      </div>
+      <div style="display: flex; gap: 20px; margin: 4px 0;">
+        <label class="check"><input type="checkbox" name="vegetarian" checked> Vegetarian</label>
+        <label class="check"><input type="checkbox" name="vegan"> Vegan</label>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <label>Exchange Group <input name="exchange_group" placeholder="e.g. Protein"></label>
+        <label>Allergens <input name="allergens" placeholder="e.g. Milk"></label>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <label>Portion (g) <input name="typical_portion_g" type="number" step="1" value="150"></label>
+        <label>Portion Label <input name="portion_label" placeholder="e.g. 1 cup"></label>
+      </div>
+      <button class="button primary" type="submit" style="margin-top: 10px;">Add Food</button>
+    </form>
+  </aside>
+</section>
+
+{% endif %}
+{% endblock %}
