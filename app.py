@@ -1879,23 +1879,23 @@ def session_templates(split):
     if split == "Push / Pull / Legs":
         return [
             ("Day 1 - Push A", ["Dumbbell Flat Bench Press", "Dumbbell Shoulder Press", "Pec Deck Fly", "Seated Lateral Raise Machine", "Parallel Bar Dip"]),
-            ("Day 2 - Pull A", ["Lat Pulldown", "One-Arm Dumbbell Row", "Back Extension", "Preacher Curl", "Leg Raise Stand"]),
+            ("Day 2 - Pull A", ["Lat Pulldown", "One-Arm Dumbbell Row", "Back Extension", "Preacher Curl", "Hanging Knee Raise"]),
             ("Day 3 - Legs A", ["Leg Press", "Dumbbell Romanian Deadlift", "Seated Leg Curl", "Standing Calf Raise", "Cycle"]),
             ("Day 4 - Push B", ["Dumbbell Decline Bench Press", "Pec Deck Fly", "Seated Lateral Raise Machine", "Parallel Bar Dip"]),
-            ("Day 5 - Pull B", ["Chin-Up or Lat Pulldown", "Dumbbell Row", "Back Extension", "Preacher Curl", "Hanging Knee Raise"]),
+            ("Day 5 - Pull B", ["Chin-Up", "One-Arm Dumbbell Row", "Back Extension", "Preacher Curl", "Hanging Knee Raise"]),
             ("Day 6 - Legs B", ["Leg Press", "Dumbbell Split Squat", "Seated Leg Curl", "Seated Calf Raise", "Treadmill Incline Walk"]),
         ]
     if split == "Upper / Lower":
         return [
             ("Day 1 - Upper A", ["Dumbbell Flat Bench Press", "Lat Pulldown", "Pec Deck Fly", "Seated Lateral Raise Machine", "Preacher Curl"]),
             ("Day 2 - Lower A", ["Leg Press", "Dumbbell Romanian Deadlift", "Seated Leg Curl", "Standing Calf Raise", "Cycle"]),
-            ("Day 3 - Upper B", ["Dumbbell Decline Bench Press", "One-Arm Dumbbell Row", "Dumbbell Shoulder Press", "Lat Pulldown", "Leg Raise Stand"]),
+            ("Day 3 - Upper B", ["Dumbbell Decline Bench Press", "One-Arm Dumbbell Row", "Dumbbell Shoulder Press", "Lat Pulldown", "Hanging Knee Raise"]),
             ("Day 4 - Lower B", ["Leg Press", "Dumbbell Walking Lunge", "Back Extension", "Seated Calf Raise", "Treadmill Incline Walk"]),
         ]
     return [
         ("Day 1 - Full Body A", ["Leg Press", "Dumbbell Flat Bench Press", "Lat Pulldown", "Seated Leg Curl", "Back Extension"]),
         ("Day 2 - Full Body B", ["Dumbbell Goblet Squat", "Pec Deck Fly", "One-Arm Dumbbell Row", "Preacher Curl", "Parallel Bar Knee Raise"]),
-        ("Day 3 - Full Body C", ["Leg Press", "Dumbbell Bench Press", "Lat Pulldown", "Dumbbell Romanian Deadlift", "Seated or Standing Calf Raise"]),
+        ("Day 3 - Full Body C", ["Leg Press", "Dumbbell Flat Bench Press", "Lat Pulldown", "Dumbbell Romanian Deadlift", "Standing Calf Raise"]),
     ]
 
 
@@ -2206,12 +2206,25 @@ def weekly_volume(member_id, plan_version_id):
     result = []
     for row in rows:
         mg = row["muscle_group"]
+        if not mg:
+            # Unmapped movement: counting its sets against no muscle would show
+            # a nameless row in the coach's volume table.
+            continue
         max_sets = 25 if mg in large_groups else 20
+        sets_done = row["sets"] or 0
+        # The UI renders this directly; keep the vocabulary fixed.
+        if sets_done < 10:
+            status = "under"
+        elif sets_done > max_sets:
+            status = "over"
+        else:
+            status = "optimal"
         result.append({
             "muscle_group": mg,
-            "sets": row["sets"] or 0,
+            "sets": sets_done,
             "min": 10,
             "max": max_sets,
+            "status": status,
         })
     return result
 
@@ -7253,91 +7266,6 @@ def ensure_plan_views_schema():
         if col_name not in existing_cols:
             conn.execute(f"ALTER TABLE plan_items ADD COLUMN {col_name} {col_type}")
     conn.commit()
-
-
-def weekly_volume(member_id, plan_version_id):
-    """Hard sets per muscle group for one plan version.
-
-    Returns [{"muscle_group": str, "sets": int, "min": int, "max": int, "status": str}, ...]
-    where min/max are the productive range for that muscle (10-20 for most,
-    wider for large groups). Sorted by muscle_group.
-    """
-    ensure_plan_views_schema()
-    raw_items = query_all(
-        "SELECT * FROM plan_items WHERE plan_version_id = ? AND (item_type = 'exercise' OR item_type IS NULL)",
-        (plan_version_id,),
-    )
-    items = [dict(i) for i in raw_items]
-    target_groups = [
-        "chest", "back", "lats", "front delts", "side delts", "rear delts",
-        "biceps", "triceps", "quads", "hamstrings", "glutes", "calves",
-        "abs", "lower back", "full body"
-    ]
-    large_groups = {"chest", "back", "quads", "hamstrings", "glutes"}
-
-    totals = {mg: 0 for mg in target_groups}
-    for item in items:
-        mg = (item.get("muscle_group") or "").strip().lower()
-        if not mg or mg not in totals:
-            title = (item.get("title") or "").lower()
-            if "bench" in title or "chest" in title or "push" in title or "fly" in title:
-                mg = "chest"
-            elif "squat" in title or "leg press" in title or "quad" in title:
-                mg = "quads"
-            elif "row" in title or "pulldown" in title or "pull-up" in title:
-                mg = "back"
-            elif "lat" in title:
-                mg = "lats"
-            elif "curl" in title or "biceps" in title:
-                mg = "biceps"
-            elif "triceps" in title or "dip" in title or "extension" in title:
-                mg = "triceps"
-            elif "overhead press" in title or "shoulder press" in title:
-                mg = "front delts"
-            elif "lateral" in title:
-                mg = "side delts"
-            elif "deadlift" in title or "hamstring" in title or "curl" in title:
-                mg = "hamstrings"
-            else:
-                mg = "full body"
-
-        sets_val = 0
-        set_count = item.get("set_count")
-        if set_count is not None:
-            sets_val = int(set_count)
-        elif item.get("sets"):
-            sets_str = str(item.get("sets")).strip()
-            if "-" in sets_str:
-                try: sets_val = int(sets_str.split("-")[-1].strip())
-                except ValueError: sets_val = 3
-            elif sets_str.isdigit():
-                sets_val = int(sets_str)
-            else:
-                sets_val = 3
-        else:
-            sets_val = 3
-
-        totals[mg] = totals.get(mg, 0) + sets_val
-
-    result = []
-    for mg in target_groups:
-        total = totals[mg]
-        min_val = 10
-        max_val = 22 if mg in large_groups else 20
-        status = "optimal"
-        if total > 0:
-            if total < min_val:
-                status = "under"
-            elif total > max_val:
-                status = "over"
-        result.append({
-            "muscle_group": mg,
-            "sets": total,
-            "min": min_val,
-            "max": max_val,
-            "status": status,
-        })
-    return sorted(result, key=lambda x: x["muscle_group"])
 
 
 @app.route("/members/<int:member_id>/log-set", methods=["POST"])

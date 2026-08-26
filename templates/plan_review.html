@@ -35,6 +35,7 @@
 </div>
 {% endif %}
 
+  {% if version.plan_type == 'workout' %}
 <!-- WEEKLY VOLUME CHART Visualizer (Part 3) -->
 <section class="panel" style="margin-bottom: 20px; background: var(--panel-2);">
   <div class="section-title">
@@ -61,6 +62,7 @@
     {% endfor %}
   </div>
 </section>
+  {% endif %}
 
 <!-- DENSE ADMIN PROGRAMME SHEET TABLE -->
 <section class="table-wrap" style="margin-bottom: 30px;">
@@ -211,7 +213,7 @@
   <a class="drawer-backdrop" href="#" aria-label="Close modal"></a>
   <aside class="payment-drawer" style="max-width: 520px;" aria-label="Add exercise">
     <div class="section-title">
-      <h2>Add Exercise to {{ version.plan_type|capitalize }} plan</h2>
+      <h2>Add {{ 'exercise' if version.plan_type == 'workout' else 'meal' }} to the {{ version.plan_type }} plan</h2>
       <a class="button" href="#">Close</a>
     </div>
     <form method="post" action="{{ url_for('add_plan_item_to_version', member_id=member.id) }}" style="display: flex; flex-direction: column; gap: 12px; margin-top: 14px;">
@@ -242,7 +244,7 @@
         <label>Load Note <input name="load_note" placeholder="e.g. 70% 1RM"></label>
         <label>Superset Group <input name="superset_group" placeholder="e.g. A1"></label>
       </div>
-      <button class="button primary" type="submit" style="margin-top: 10px;">Add Exercise to Sheet</button>
+      <button class="button primary" type="submit" style="margin-top: 10px;">Add {{ 'exercise' if version.plan_type == 'workout' else 'meal' }}</button>
     </form>
   </aside>
 </section>
