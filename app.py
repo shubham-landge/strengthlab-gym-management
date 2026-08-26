@@ -4,6 +4,7 @@ from functools import wraps
 from io import BytesIO
 import json
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -765,6 +766,111 @@ def _migrate_legacy_plans(cursor):
             )
 
 
+def _parse_rest_to_seconds(rest_text):
+    """Convert rest text like '2-3 min' or '90 sec' to average seconds."""
+    if not rest_text:
+        return None
+    rest_lower = rest_text.lower().strip()
+    range_match = re.search(r"(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*(min|sec)", rest_lower)
+    if range_match:
+        low, high, unit = range_match.groups()
+        avg = (float(low) + float(high)) / 2
+        if unit == "min":
+            return int(round(avg * 60))
+        return int(round(avg))
+    single_match = re.search(r"(\d+(?:\.\d+)?)\s*(min|sec)", rest_lower)
+    if single_match:
+        val, unit = single_match.groups()
+        if unit == "min":
+            return int(round(float(val) * 60))
+        return int(round(float(val)))
+    return None
+
+
+def _backfill_plan_item_prescriptions(cursor):
+    """Parse existing detail sentences into structured prescription fields.
+
+    Parseable strength rows are updated with extracted fields and detail is
+    regenerated from those fields.  Unparseable rows keep their original detail
+    and receive NULL fields.  Conditioning-like rows are marked as recovery.
+    """
+    rows = cursor.execute(
+        "SELECT id, item_type, title, detail FROM plan_items WHERE detail IS NOT NULL AND detail != ''"
+    ).fetchall()
+
+    for row_id, item_type, title, detail in rows:
+        # Skip if already backfilled (any structured field is present)
+        existing = cursor.execute(
+            "SELECT 1 FROM plan_items WHERE id = ? AND (sets IS NOT NULL OR set_count IS NOT NULL OR reps IS NOT NULL)",
+            (row_id,),
+        ).fetchone()
+        if existing:
+            continue
+
+        # Conditioning-like: duration-based, no set-and-rep structure
+        is_conditioning = (
+            (title and "conditioning" in title.lower())
+            or (
+                "min" in detail.lower()
+                and "sets" not in detail.lower()
+                and "reps" not in detail.lower()
+            )
+        )
+
+        if is_conditioning:
+            cursor.execute(
+                """
+                UPDATE plan_items
+                SET item_type = 'recovery',
+                    muscle_group = 'full body',
+                    rest_seconds = NULL,
+                    set_count = NULL
+                WHERE id = ?
+                """,
+                (row_id,),
+            )
+            continue
+
+        # Try to parse the known strength shape:
+        # "N sets × A-B reps · RPE X-Y · tempo T · rest R."
+        match = re.search(
+            r"(?P<sets>[\d-]+)\s+sets\s*[×x]\s*(?P<reps>[\d-]+)\s+reps\s*·\s*RPE\s+(?P<rpe>[\d-]+)"
+            r"(?:\s*\([^)]*\))?\s*·\s*tempo\s+(?P<tempo>[\d-]+)"
+            r"(?:\s*\([^)]*\))?\s*·\s*rest\s+(?P<rest>[^.]+)\.?",
+            detail,
+        )
+
+        if not match:
+            # Unparseable — keep original detail, all fields stay NULL
+            continue
+
+        sets = match.group("sets")
+        reps = match.group("reps")
+        rpe = match.group("rpe")
+        tempo = match.group("tempo")
+        rest = match.group("rest").strip()
+
+        # set_count is the top of the sets range
+        set_count = None
+        try:
+            set_count = max(int(p) for p in sets.split("-") if p.strip().isdigit())
+        except ValueError:
+            pass
+
+        rest_seconds = _parse_rest_to_seconds(rest)
+        new_detail = f"{sets} sets × {reps} reps · RPE {rpe} · tempo {tempo} · rest {rest}."
+
+        cursor.execute(
+            """
+            UPDATE plan_items
+            SET sets = ?, set_count = ?, reps = ?, rpe = ?, tempo = ?,
+                rest_seconds = ?, detail = ?
+            WHERE id = ?
+            """,
+            (sets, set_count, reps, rpe, tempo, rest_seconds, new_detail, row_id),
+        )
+
+
 def init_db():
     connection = sqlite3.connect(DB_PATH)
     cursor = connection.cursor()
@@ -1131,6 +1237,17 @@ def init_db():
             confidence TEXT,
             position INTEGER,
             provenance TEXT CHECK(provenance IN ('rule', 'ai', 'admin')),
+            sets TEXT,
+            set_count INTEGER,
+            reps TEXT,
+            rpe TEXT,
+            tempo TEXT,
+            rest_seconds INTEGER,
+            load_note TEXT,
+            muscle_group TEXT,
+            superset_group TEXT,
+            week INTEGER DEFAULT 1,
+            coach_note TEXT,
             FOREIGN KEY(plan_version_id) REFERENCES plan_versions(id) ON DELETE CASCADE
         );
 
@@ -1146,6 +1263,22 @@ def init_db():
             FOREIGN KEY(plan_version_id) REFERENCES plan_versions(id) ON DELETE CASCADE,
             FOREIGN KEY(reviewed_by) REFERENCES users(id)
         );
+
+        CREATE TABLE IF NOT EXISTS set_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_item_id INTEGER NOT NULL,
+            member_id INTEGER NOT NULL,
+            set_number INTEGER,
+            reps_done INTEGER,
+            load_kg REAL,
+            rpe_reported REAL,
+            logged_at TEXT,
+            FOREIGN KEY(plan_item_id) REFERENCES plan_items(id) ON DELETE CASCADE,
+            FOREIGN KEY(member_id) REFERENCES members(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_set_logs_member_plan_item
+        ON set_logs (member_id, plan_item_id);
         """
     )
 
@@ -1304,10 +1437,30 @@ def init_db():
             "ALTER TABLE plan_items ADD COLUMN provenance TEXT CHECK(provenance IN ('rule', 'ai', 'admin'))"
         )
 
+    extra_plan_item_columns = {
+        "sets": "TEXT",
+        "set_count": "INTEGER",
+        "reps": "TEXT",
+        "rpe": "TEXT",
+        "tempo": "TEXT",
+        "rest_seconds": "INTEGER",
+        "load_note": "TEXT",
+        "muscle_group": "TEXT",
+        "superset_group": "TEXT",
+        "week": "INTEGER DEFAULT 1",
+        "coach_note": "TEXT",
+    }
+    for column, column_type in extra_plan_item_columns.items():
+        if column not in plan_item_columns:
+            cursor.execute(f"ALTER TABLE plan_items ADD COLUMN {column} {column_type}")
+
     # Migrate legacy plan text into approved admin plan versions so nobody loses
     # a plan on upgrade. Idempotent: skip members who already have an approved
     # version for the plan type.
     _migrate_legacy_plans(cursor)
+
+    # Backfill existing plan_items that carry a parseable detail sentence.
+    _backfill_plan_item_prescriptions(cursor)
 
     user_columns = {row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()}
     if "must_change_password" not in user_columns:
@@ -1815,6 +1968,59 @@ def recipe_cards(member, calories, protein, carbs, fat):
     ]
 
 
+_CLOSED_MUSCLE_GROUPS = {
+    "chest", "back", "lats", "front delts", "side delts", "rear delts",
+    "biceps", "triceps", "quads", "hamstrings", "glutes", "calves",
+    "abs", "lower back", "full body",
+}
+
+
+def _normalize_muscle_group(raw):
+    """Map raw primary_muscle onto the closed contract list."""
+    if not raw:
+        return None
+    lowered = raw.lower().strip()
+    if lowered in _CLOSED_MUSCLE_GROUPS:
+        return lowered
+    if lowered == "lower chest":
+        return "chest"
+    return lowered
+
+
+def render_detail_from_fields(item):
+    """Reproduce the legacy detail shape from structured prescription fields."""
+    if item.get("item_type") == "recovery" or item.get("sets") is None:
+        return item.get("detail") or ""
+    sets = item.get("sets", "")
+    reps = item.get("reps", "")
+    rpe = item.get("rpe", "")
+    tempo = item.get("tempo", "")
+    rest_seconds = item.get("rest_seconds")
+    if rest_seconds is not None:
+        if rest_seconds >= 60:
+            minutes = rest_seconds / 60
+            if minutes == int(minutes):
+                rest = f"{int(minutes)} min"
+            else:
+                rest = f"{minutes:.1f} min"
+        else:
+            rest = f"{rest_seconds} sec"
+    else:
+        rest = ""
+    parts = []
+    if sets and reps:
+        parts.append(f"{sets} sets × {reps} reps")
+    if rpe:
+        parts.append(f"RPE {rpe}")
+    if tempo:
+        parts.append(f"tempo {tempo}")
+    if rest:
+        parts.append(f"rest {rest}")
+    if parts:
+        return " · ".join(parts) + "."
+    return item.get("detail") or ""
+
+
 def _persist_structured_plan(member_id, plan_type, items, provenance="rule", model=None, status="draft", blocked_reason=None, conn=None):
     """Insert a plan_version and its plan_items. Does not touch approved rows.
 
@@ -1827,6 +2033,32 @@ def _persist_structured_plan(member_id, plan_type, items, provenance="rule", mod
     if own_txn:
         conn = db()
     try:
+        # Coach-note survival: copy from the most recent existing version
+        # BEFORE inserting the new one, otherwise the query returns itself.
+        coach_notes = {}
+        try:
+            prev_version = conn.execute(
+                """
+                SELECT id FROM plan_versions
+                WHERE member_id = ? AND plan_type = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (member_id, plan_type),
+            ).fetchone()
+            if prev_version:
+                for row in conn.execute(
+                    """
+                    SELECT day_label, slot_time, title, coach_note
+                    FROM plan_items
+                    WHERE plan_version_id = ? AND coach_note IS NOT NULL AND coach_note != ''
+                    """,
+                    (prev_version["id"],),
+                ).fetchall():
+                    key = (row["day_label"], row["slot_time"], row["title"])
+                    coach_notes[key] = row["coach_note"]
+        except Exception:
+            pass
+
         cursor = conn.execute(
             """
             INSERT INTO plan_versions (member_id, plan_type, status, provenance, model, generated_at, blocked_reason)
@@ -1835,14 +2067,19 @@ def _persist_structured_plan(member_id, plan_type, items, provenance="rule", mod
             (member_id, plan_type, status, provenance, model, generated_at, blocked_reason),
         )
         version_id = cursor.lastrowid
+
         for pos, item in enumerate(items):
+            key = (item.get("day_label"), item.get("slot_time"), item.get("title"))
+            coach_note = coach_notes.get(key)
             conn.execute(
                 """
                 INSERT INTO plan_items (
                     plan_version_id, day_label, slot_time, item_type, title, detail,
-                    rationale, evidence_grade, evidence_source, source_url, confidence, position
+                    rationale, evidence_grade, evidence_source, source_url, confidence, position,
+                    sets, set_count, reps, rpe, tempo, rest_seconds, load_note,
+                    muscle_group, superset_group, week, coach_note
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     version_id,
@@ -1857,6 +2094,17 @@ def _persist_structured_plan(member_id, plan_type, items, provenance="rule", mod
                     item.get("source_url"),
                     item.get("confidence"),
                     item.get("position", pos),
+                    item.get("sets"),
+                    item.get("set_count"),
+                    item.get("reps"),
+                    item.get("rpe"),
+                    item.get("tempo"),
+                    item.get("rest_seconds"),
+                    item.get("load_note"),
+                    item.get("muscle_group"),
+                    item.get("superset_group"),
+                    item.get("week", 1),
+                    coach_note,
                 ),
             )
         if own_txn:
@@ -1930,6 +2178,199 @@ def _build_diet_text(member, calories, protein, carbs, fat, food_preference, ite
     return "\n".join(lines)
 
 
+def weekly_volume(member_id, plan_version_id):
+    """Hard sets per muscle group for one plan version.
+
+    Returns [{"muscle_group": str, "sets": int, "min": int, "max": int}, ...]
+    where min/max are the productive range for that muscle (10-20 for most,
+    wider for large groups). Sorted by muscle_group.
+
+    Range rationale: trained lifters typically need ~10-20 hard sets/week/muscle
+    for productive hypertrophy; larger groups (legs, back) tolerate more volume
+    and are capped at 25 here.
+    """
+    rows = query_all(
+        """
+        SELECT pi.muscle_group, SUM(pi.set_count) AS sets
+        FROM plan_items pi
+        JOIN plan_versions pv ON pi.plan_version_id = pv.id
+        WHERE pi.plan_version_id = ?
+          AND pv.member_id = ?
+          AND pi.item_type = 'exercise'
+        GROUP BY pi.muscle_group
+        ORDER BY pi.muscle_group
+        """,
+        (plan_version_id, member_id),
+    )
+    large_groups = {"quads", "hamstrings", "glutes", "lats", "back", "chest"}
+    result = []
+    for row in rows:
+        mg = row["muscle_group"]
+        max_sets = 25 if mg in large_groups else 20
+        result.append({
+            "muscle_group": mg,
+            "sets": row["sets"] or 0,
+            "min": 10,
+            "max": max_sets,
+        })
+    return result
+
+
+def propose_next_load(plan_item_id):
+    """Propose the next load for an exercise based on the most recent set log."""
+    log = query_one(
+        """
+        SELECT reps_done, load_kg
+        FROM set_logs
+        WHERE plan_item_id = ?
+        ORDER BY logged_at DESC, id DESC
+        LIMIT 1
+        """,
+        (plan_item_id,),
+    )
+    item = query_one(
+        "SELECT reps, title FROM plan_items WHERE id = ?",
+        (plan_item_id,),
+    )
+    if item is None:
+        return {
+            "plan_item_id": plan_item_id,
+            "last_load_kg": None,
+            "suggested_load_kg": None,
+            "reason": "Plan item not found.",
+        }
+
+    if log is None:
+        return {
+            "plan_item_id": plan_item_id,
+            "last_load_kg": None,
+            "suggested_load_kg": None,
+            "reason": "No sets logged yet.",
+        }
+
+    reps_done = log["reps_done"]
+    last_load_kg = log["load_kg"]
+
+    # Determine prescribed top rep from reps column (e.g. "6-10" -> 10)
+    reps_str = item["reps"] or ""
+    top_rep = None
+    if reps_str:
+        match = re.search(r"(\d+)(?:\s*-\s*(\d+))?", reps_str)
+        if match:
+            top_rep = int(match.group(2)) if match.group(2) else int(match.group(1))
+
+    if top_rep is not None and reps_done is not None and reps_done >= top_rep:
+        increment = 5.0 if "leg press" in (item["title"] or "").lower() else 2.5
+        suggested = (last_load_kg or 0) + increment
+        return {
+            "plan_item_id": plan_item_id,
+            "last_load_kg": last_load_kg,
+            "suggested_load_kg": suggested,
+            "reason": (
+                f"Completed top of rep range ({reps_done} >= {top_rep}). "
+                f"Add {increment} kg."
+            ),
+        }
+
+    return {
+        "plan_item_id": plan_item_id,
+        "last_load_kg": last_load_kg,
+        "suggested_load_kg": last_load_kg,
+        "reason": "Hold current load.",
+    }
+
+
+def _extract_protein_from_detail(detail):
+    """Extract protein grams from a detail string like '... protein 38 g ...' or '... 14 g protein ...'."""
+    lowered = (detail or "").lower()
+    # "protein 38 g"
+    match = re.search(r"protein\s+(\d+(?:\.\d+)?)\s*g", lowered)
+    if match:
+        return float(match.group(1))
+    # "14 g protein"
+    match = re.search(r"(\d+(?:\.\d+)?)\s*g\s+protein", lowered)
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def _estimate_protein_from_foods(detail, foods):
+    """Approximate protein by matching known foods in the detail string."""
+    if not detail:
+        return None
+    lowered = detail.lower()
+    total = 0.0
+    matched = False
+    for food in foods:
+        name = food[0].lower()
+        if name in lowered:
+            protein_100g = food[3]   # per FOOD_FIELDS
+            portion_g = food[10]     # per FOOD_FIELDS
+            total += protein_100g * portion_g / 100.0
+            matched = True
+    return total if matched else None
+
+
+def _parse_hhmm(text):
+    """Parse 'HH:MM' to minutes since midnight."""
+    if not text:
+        return None
+    try:
+        h, m = text.split(":")
+        return int(h) * 60 + int(m)
+    except ValueError:
+        return None
+
+
+def diet_quality_notes(diet_items, member):
+    """Return human-readable nutrition warnings for a list of diet items.
+
+    (a) Flag meals whose protein dose is below max(20, 0.25 g/kg body weight).
+        The ISSN position stand recommends ~0.25 g/kg or 20-40 g per serving.
+    (b) Flag gaps longer than 4 h (240 min) between consecutive meal slot_times.
+    """
+    notes = []
+    weight_kg = member_number(member, "weight_kg", 70)
+    protein_floor = max(20, 0.25 * weight_kg)
+
+    for item in diet_items:
+        if item.get("item_type") != "meal":
+            continue
+
+        detail = item.get("detail") or ""
+        protein_g = _extract_protein_from_detail(detail)
+
+        if protein_g is None:
+            from services import content_library
+            protein_g = _estimate_protein_from_foods(detail, content_library.FOODS)
+
+        if protein_g is not None and protein_g < protein_floor:
+            title = item.get("title", "Meal")
+            notes.append(
+                f"{title} protein ({protein_g:.1f} g) is below the per-serving "
+                f"floor of {protein_floor:.1f} g for this member."
+            )
+
+    meals = [
+        item for item in diet_items
+        if item.get("item_type") == "meal" and item.get("slot_time")
+    ]
+    meals.sort(key=lambda x: x["slot_time"])
+
+    for i in range(1, len(meals)):
+        prev_time = _parse_hhmm(meals[i - 1]["slot_time"])
+        curr_time = _parse_hhmm(meals[i]["slot_time"])
+        if prev_time is not None and curr_time is not None:
+            gap = curr_time - prev_time
+            if gap > 240:
+                notes.append(
+                    f"Gap of {gap // 60} h {gap % 60} min between "
+                    f"{meals[i - 1]['title']} and {meals[i]['title']}."
+                )
+
+    return notes
+
+
 def generate_rule_based_plans(member):
     from services import circadian_service
     from services.clinical_recommendation_service import get_or_create_health_profile
@@ -1944,6 +2385,12 @@ def generate_rule_based_plans(member):
     available = ", ".join(equipment_names())
     calories, protein, carbs, fat = nutrition_targets(member, goal)
     food_preference = member_text(member, "food_preference", "balanced local meals")
+
+    # Muscle-group lookup for every exercise in the library.
+    exercise_muscles = {
+        row["name"].lower(): row["primary_muscle"]
+        for row in query_all("SELECT name, primary_muscle FROM exercise_library WHERE active = 1")
+    }
 
     wake = member_text(member, "wake_time") or None
     workout_time = member_text(member, "workout_time") or None
@@ -2019,7 +2466,40 @@ def generate_rule_based_plans(member):
             seen_exercises.add(exercise)
             pos += 1
             prescription = programming.prescribe(exercise, goal, week=1)
-            detail = programming.format_prescription(prescription)
+            role = prescription["role"]
+
+            # Extract rpe range (e.g. "6-7" from "RPE 6-7 (4-3 reps in reserve)")
+            rpe_match = re.search(r"RPE\s+([\d-]+)", prescription["rpe"])
+            rpe = rpe_match.group(1) if rpe_match else None
+
+            # Extract tempo code when present; keep descriptive text for core.
+            tempo_match = re.search(r"^([\d-]+)", prescription["tempo"])
+            if tempo_match and role in (programming.COMPOUND, programming.ISOLATION):
+                tempo = tempo_match.group(1)
+            elif role == programming.CORE:
+                tempo = prescription["tempo"]
+            else:
+                tempo = None
+
+            # Compute set_count from sets range
+            sets = prescription["sets"]
+            try:
+                set_count = max(int(p) for p in sets.split("-") if p.strip().isdigit())
+            except ValueError:
+                set_count = None
+
+            rest_seconds = _parse_rest_to_seconds(prescription["rest"])
+            muscle_group = _normalize_muscle_group(exercise_muscles.get(exercise.lower()))
+
+            if role == programming.COMPOUND:
+                load_note = "Select a load that allows all prescribed reps with solid form."
+            elif role == programming.ISOLATION:
+                load_note = "Use the smallest weight increment available; focus on feel."
+            elif role == programming.CORE:
+                load_note = "Add load only when you can complete every rep without momentum."
+            else:
+                load_note = None
+
             rationale = (
                 f"{prescription['role'].title()} movement for {day_label}. "
                 f"Chosen for goal '{goal}' at {level} level. "
@@ -2029,28 +2509,52 @@ def generate_rule_based_plans(member):
                 rationale += f"Modified around injury note: {injury_text}. Use pain-free range and trainer clearance."
             else:
                 rationale += "Pain-free range of motion required; stop if joint pain appears."
-            workout_items.append({
+
+            item = {
                 "day_label": day_label,
                 "slot_time": training_slot["slot_time"],
-                "item_type": "exercise",
+                "item_type": "exercise" if role != programming.CONDITIONING else "recovery",
                 "title": exercise,
-                "detail": detail,
+                "sets": None if role == programming.CONDITIONING else sets,
+                "set_count": None if role == programming.CONDITIONING else set_count,
+                "reps": prescription["reps"],
+                "rpe": None if role == programming.CONDITIONING else rpe,
+                "tempo": tempo,
+                "rest_seconds": None if role == programming.CONDITIONING else rest_seconds,
+                "load_note": load_note,
+                "muscle_group": "full body" if role == programming.CONDITIONING else muscle_group,
+                "superset_group": None,
+                "week": 1,
                 "rationale": rationale,
                 "confidence": "High",
                 "position": pos,
-            })
+            }
+            item["detail"] = render_detail_from_fields(item)
+            workout_items.append(item)
 
         # Conditioning
         cond_pos = len(exercises) + 1
         cond_rationale = f"Matched to goal '{goal}' and {level} capacity. {blueprint['conditioning']}"
         if injury_text and injury_text.lower() not in {"none", "no", "na"}:
             cond_rationale += f" Modified around injury note: {injury_text}."
+        cond_prescription = programming.prescribe("Conditioning", goal, week=1)
+        cond_reps = cond_prescription["reps"]
         workout_items.append({
             "day_label": day_label,
             "slot_time": training_slot["slot_time"],
-            "item_type": "exercise",
+            "item_type": "recovery",
             "title": "Conditioning",
-            "detail": blueprint["conditioning"],
+            "sets": None,
+            "set_count": None,
+            "reps": cond_reps,
+            "rpe": None,
+            "tempo": None,
+            "rest_seconds": None,
+            "load_note": None,
+            "muscle_group": "full body",
+            "superset_group": None,
+            "week": 1,
+            "detail": cond_reps,
             "rationale": cond_rationale,
             "confidence": "High",
             "position": cond_pos,
@@ -2178,6 +2682,9 @@ def generate_rule_based_plans(member):
     # --- legacy text for backward compatibility -------------------------------
     workout_text = _build_workout_text(member, blueprint, available, workout_items)
     diet_text = _build_diet_text(member, calories, protein, carbs, fat, food_preference, diet_items)
+    notes = diet_quality_notes(diet_items, member)
+    if notes:
+        diet_text += "\n\nNutrition notes:\n" + "\n".join("- " + n for n in notes)
     return workout_text, diet_text
 
 
