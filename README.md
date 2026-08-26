@@ -140,11 +140,14 @@ branches that do not overlap:
 
 ## In Progress
 
-- [`docs/tasks/antigravity-admin-ux.md`](docs/tasks/antigravity-admin-ux.md) —
-  admin UX: daily workflow speed and information architecture (Antigravity,
-  branch `feat/admin-ux`).
-- Coach-grade plan content with periodisation (Claude, branch
-  `feat/coach-grade-plans`).
+- [`docs/tasks/SHARED-CONTRACT.md`](docs/tasks/SHARED-CONTRACT.md) — the columns
+  both tracks read and write. Read before either brief.
+- [`docs/tasks/opencode-plan-detail.md`](docs/tasks/opencode-plan-detail.md) —
+  structured prescriptions, weekly volume, progression from logged sets
+  (OpenCode, branch `feat/plan-detail`).
+- [`docs/tasks/antigravity-plan-views.md`](docs/tasks/antigravity-plan-views.md) —
+  catalogue screen, client session card, admin programme sheet (Antigravity,
+  branch `feat/plan-views`).
 
 Parallel agents must work in **separate git worktrees**. A shared working tree
 previously let an untracked file leak between branches, so both agents believed
