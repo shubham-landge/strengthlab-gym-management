@@ -2033,16 +2033,8 @@ def _persist_structured_plan(member_id, plan_type, items, provenance="rule", mod
     if own_txn:
         conn = db()
     try:
-        cursor = conn.execute(
-            """
-            INSERT INTO plan_versions (member_id, plan_type, status, provenance, model, generated_at, blocked_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (member_id, plan_type, status, provenance, model, generated_at, blocked_reason),
-        )
-        version_id = cursor.lastrowid
-
-        # Coach-note survival: copy from the most recent existing version.
+        # Coach-note survival: copy from the most recent existing version
+        # BEFORE inserting the new one, otherwise the query returns itself.
         coach_notes = {}
         try:
             prev_version = conn.execute(
@@ -2066,6 +2058,15 @@ def _persist_structured_plan(member_id, plan_type, items, provenance="rule", mod
                     coach_notes[key] = row["coach_note"]
         except Exception:
             pass
+
+        cursor = conn.execute(
+            """
+            INSERT INTO plan_versions (member_id, plan_type, status, provenance, model, generated_at, blocked_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (member_id, plan_type, status, provenance, model, generated_at, blocked_reason),
+        )
+        version_id = cursor.lastrowid
 
         for pos, item in enumerate(items):
             key = (item.get("day_label"), item.get("slot_time"), item.get("title"))
