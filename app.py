@@ -1968,6 +1968,59 @@ def recipe_cards(member, calories, protein, carbs, fat):
     ]
 
 
+_CLOSED_MUSCLE_GROUPS = {
+    "chest", "back", "lats", "front delts", "side delts", "rear delts",
+    "biceps", "triceps", "quads", "hamstrings", "glutes", "calves",
+    "abs", "lower back", "full body",
+}
+
+
+def _normalize_muscle_group(raw):
+    """Map raw primary_muscle onto the closed contract list."""
+    if not raw:
+        return None
+    lowered = raw.lower().strip()
+    if lowered in _CLOSED_MUSCLE_GROUPS:
+        return lowered
+    if lowered == "lower chest":
+        return "chest"
+    return lowered
+
+
+def render_detail_from_fields(item):
+    """Reproduce the legacy detail shape from structured prescription fields."""
+    if item.get("item_type") == "recovery" or item.get("sets") is None:
+        return item.get("detail") or ""
+    sets = item.get("sets", "")
+    reps = item.get("reps", "")
+    rpe = item.get("rpe", "")
+    tempo = item.get("tempo", "")
+    rest_seconds = item.get("rest_seconds")
+    if rest_seconds is not None:
+        if rest_seconds >= 60:
+            minutes = rest_seconds / 60
+            if minutes == int(minutes):
+                rest = f"{int(minutes)} min"
+            else:
+                rest = f"{minutes:.1f} min"
+        else:
+            rest = f"{rest_seconds} sec"
+    else:
+        rest = ""
+    parts = []
+    if sets and reps:
+        parts.append(f"{sets} sets × {reps} reps")
+    if rpe:
+        parts.append(f"RPE {rpe}")
+    if tempo:
+        parts.append(f"tempo {tempo}")
+    if rest:
+        parts.append(f"rest {rest}")
+    if parts:
+        return " · ".join(parts) + "."
+    return item.get("detail") or ""
+
+
 def _persist_structured_plan(member_id, plan_type, items, provenance="rule", model=None, status="draft", blocked_reason=None, conn=None):
     """Insert a plan_version and its plan_items. Does not touch approved rows.
 
@@ -1988,14 +2041,44 @@ def _persist_structured_plan(member_id, plan_type, items, provenance="rule", mod
             (member_id, plan_type, status, provenance, model, generated_at, blocked_reason),
         )
         version_id = cursor.lastrowid
+
+        # Coach-note survival: copy from the most recent existing version.
+        coach_notes = {}
+        try:
+            prev_version = conn.execute(
+                """
+                SELECT id FROM plan_versions
+                WHERE member_id = ? AND plan_type = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (member_id, plan_type),
+            ).fetchone()
+            if prev_version:
+                for row in conn.execute(
+                    """
+                    SELECT day_label, slot_time, title, coach_note
+                    FROM plan_items
+                    WHERE plan_version_id = ? AND coach_note IS NOT NULL AND coach_note != ''
+                    """,
+                    (prev_version["id"],),
+                ).fetchall():
+                    key = (row["day_label"], row["slot_time"], row["title"])
+                    coach_notes[key] = row["coach_note"]
+        except Exception:
+            pass
+
         for pos, item in enumerate(items):
+            key = (item.get("day_label"), item.get("slot_time"), item.get("title"))
+            coach_note = coach_notes.get(key)
             conn.execute(
                 """
                 INSERT INTO plan_items (
                     plan_version_id, day_label, slot_time, item_type, title, detail,
-                    rationale, evidence_grade, evidence_source, source_url, confidence, position
+                    rationale, evidence_grade, evidence_source, source_url, confidence, position,
+                    sets, set_count, reps, rpe, tempo, rest_seconds, load_note,
+                    muscle_group, superset_group, week, coach_note
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     version_id,
@@ -2010,6 +2093,17 @@ def _persist_structured_plan(member_id, plan_type, items, provenance="rule", mod
                     item.get("source_url"),
                     item.get("confidence"),
                     item.get("position", pos),
+                    item.get("sets"),
+                    item.get("set_count"),
+                    item.get("reps"),
+                    item.get("rpe"),
+                    item.get("tempo"),
+                    item.get("rest_seconds"),
+                    item.get("load_note"),
+                    item.get("muscle_group"),
+                    item.get("superset_group"),
+                    item.get("week", 1),
+                    coach_note,
                 ),
             )
         if own_txn:
@@ -2098,6 +2192,12 @@ def generate_rule_based_plans(member):
     calories, protein, carbs, fat = nutrition_targets(member, goal)
     food_preference = member_text(member, "food_preference", "balanced local meals")
 
+    # Muscle-group lookup for every exercise in the library.
+    exercise_muscles = {
+        row["name"].lower(): row["primary_muscle"]
+        for row in query_all("SELECT name, primary_muscle FROM exercise_library WHERE active = 1")
+    }
+
     wake = member_text(member, "wake_time") or None
     workout_time = member_text(member, "workout_time") or None
     sleep = member_text(member, "sleep_time") or None
@@ -2172,7 +2272,40 @@ def generate_rule_based_plans(member):
             seen_exercises.add(exercise)
             pos += 1
             prescription = programming.prescribe(exercise, goal, week=1)
-            detail = programming.format_prescription(prescription)
+            role = prescription["role"]
+
+            # Extract rpe range (e.g. "6-7" from "RPE 6-7 (4-3 reps in reserve)")
+            rpe_match = re.search(r"RPE\s+([\d-]+)", prescription["rpe"])
+            rpe = rpe_match.group(1) if rpe_match else None
+
+            # Extract tempo code when present; keep descriptive text for core.
+            tempo_match = re.search(r"^([\d-]+)", prescription["tempo"])
+            if tempo_match and role in (programming.COMPOUND, programming.ISOLATION):
+                tempo = tempo_match.group(1)
+            elif role == programming.CORE:
+                tempo = prescription["tempo"]
+            else:
+                tempo = None
+
+            # Compute set_count from sets range
+            sets = prescription["sets"]
+            try:
+                set_count = max(int(p) for p in sets.split("-") if p.strip().isdigit())
+            except ValueError:
+                set_count = None
+
+            rest_seconds = _parse_rest_to_seconds(prescription["rest"])
+            muscle_group = _normalize_muscle_group(exercise_muscles.get(exercise.lower()))
+
+            if role == programming.COMPOUND:
+                load_note = "Select a load that allows all prescribed reps with solid form."
+            elif role == programming.ISOLATION:
+                load_note = "Use the smallest weight increment available; focus on feel."
+            elif role == programming.CORE:
+                load_note = "Add load only when you can complete every rep without momentum."
+            else:
+                load_note = None
+
             rationale = (
                 f"{prescription['role'].title()} movement for {day_label}. "
                 f"Chosen for goal '{goal}' at {level} level. "
@@ -2182,28 +2315,52 @@ def generate_rule_based_plans(member):
                 rationale += f"Modified around injury note: {injury_text}. Use pain-free range and trainer clearance."
             else:
                 rationale += "Pain-free range of motion required; stop if joint pain appears."
-            workout_items.append({
+
+            item = {
                 "day_label": day_label,
                 "slot_time": training_slot["slot_time"],
-                "item_type": "exercise",
+                "item_type": "exercise" if role != programming.CONDITIONING else "recovery",
                 "title": exercise,
-                "detail": detail,
+                "sets": None if role == programming.CONDITIONING else sets,
+                "set_count": None if role == programming.CONDITIONING else set_count,
+                "reps": prescription["reps"],
+                "rpe": None if role == programming.CONDITIONING else rpe,
+                "tempo": tempo,
+                "rest_seconds": None if role == programming.CONDITIONING else rest_seconds,
+                "load_note": load_note,
+                "muscle_group": "full body" if role == programming.CONDITIONING else muscle_group,
+                "superset_group": None,
+                "week": 1,
                 "rationale": rationale,
                 "confidence": "High",
                 "position": pos,
-            })
+            }
+            item["detail"] = render_detail_from_fields(item)
+            workout_items.append(item)
 
         # Conditioning
         cond_pos = len(exercises) + 1
         cond_rationale = f"Matched to goal '{goal}' and {level} capacity. {blueprint['conditioning']}"
         if injury_text and injury_text.lower() not in {"none", "no", "na"}:
             cond_rationale += f" Modified around injury note: {injury_text}."
+        cond_prescription = programming.prescribe("Conditioning", goal, week=1)
+        cond_reps = cond_prescription["reps"]
         workout_items.append({
             "day_label": day_label,
             "slot_time": training_slot["slot_time"],
-            "item_type": "exercise",
+            "item_type": "recovery",
             "title": "Conditioning",
-            "detail": blueprint["conditioning"],
+            "sets": None,
+            "set_count": None,
+            "reps": cond_reps,
+            "rpe": None,
+            "tempo": None,
+            "rest_seconds": None,
+            "load_note": None,
+            "muscle_group": "full body",
+            "superset_group": None,
+            "week": 1,
+            "detail": cond_reps,
             "rationale": cond_rationale,
             "confidence": "High",
             "position": cond_pos,
