@@ -903,6 +903,40 @@ def init_db():
             FOREIGN KEY(member_id) REFERENCES members(id)
         );
 
+        CREATE TABLE IF NOT EXISTS exercise_library (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            movement_pattern TEXT,
+            role TEXT,
+            primary_muscle TEXT,
+            secondary_muscles TEXT,
+            equipment TEXT,
+            level TEXT,
+            contraindications TEXT,
+            regression TEXT,
+            progression TEXT,
+            cues TEXT,
+            active INTEGER DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS food_library (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            category TEXT,
+            kcal_100g REAL,
+            protein_100g REAL,
+            carb_100g REAL,
+            fat_100g REAL,
+            vegetarian INTEGER DEFAULT 1,
+            vegan INTEGER DEFAULT 0,
+            allergens TEXT,
+            exchange_group TEXT,
+            typical_portion_g REAL,
+            portion_label TEXT,
+            source TEXT,
+            active INTEGER DEFAULT 1
+        );
+
         CREATE TABLE IF NOT EXISTS ai_credentials (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             provider TEXT NOT NULL,
@@ -1395,6 +1429,22 @@ def init_db():
                     str(date.today() + timedelta(days=due_days)),
                 ),
             )
+
+    # Seed the movement and food catalogues. INSERT OR IGNORE keeps curated
+    # edits made in the app: a row already present is never overwritten by the
+    # shipped defaults, so a gym can correct a macro without it reverting.
+    from services import content_library
+
+    cursor.executemany(
+        f"INSERT OR IGNORE INTO exercise_library ({', '.join(content_library.EXERCISE_FIELDS)}) "
+        f"VALUES ({', '.join('?' * len(content_library.EXERCISE_FIELDS))})",
+        content_library.EXERCISES,
+    )
+    cursor.executemany(
+        f"INSERT OR IGNORE INTO food_library ({', '.join(content_library.FOOD_FIELDS)}) "
+        f"VALUES ({', '.join('?' * len(content_library.FOOD_FIELDS))})",
+        content_library.FOODS,
+    )
 
     user_count = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     if user_count == 0:
@@ -2235,6 +2285,83 @@ def member_ai_payload(member):
     }
 
 
+def available_exercises(member=None):
+    """Movements this gym can actually run, minus anything the member should avoid.
+
+    Filtering here rather than in the prompt means the rule engine and the AI
+    both work from the same closed list, and a model cannot prescribe a machine
+    that is not on the floor.
+    """
+    owned = {name.lower() for name in equipment_names()}
+    injury = (member_text(member, "injury_notes") + " " + member_text(member, "medical_notes")).lower() if member else ""
+
+    usable = []
+    for row in query_all("SELECT * FROM exercise_library WHERE active = 1 ORDER BY name"):
+        needed = (row["equipment"] or "").lower().strip()
+        if needed and not any(needed in owned_name for owned_name in owned):
+            continue
+        flags = [c.strip().lower() for c in (row["contraindications"] or "").split(",") if c.strip()]
+        if injury and any(flag and flag in injury for flag in flags):
+            continue
+        usable.append(row)
+    return usable
+
+
+def available_foods(member=None):
+    """Foods this member can eat, by dietary style and stated exclusions."""
+    style = member_text(member, "dietary_style").lower() if member else ""
+    preference = member_text(member, "food_preference").lower() if member else ""
+    wants_vegan = "vegan" in style or "vegan" in preference
+    wants_veg = wants_vegan or "vegetarian" in style or "vegetarian" in preference
+
+    avoid = []
+    if member:
+        avoid = [a.lower() for a in
+                 parsed_member_choices(member, "food_exclusions")
+                 + parsed_member_choices(member, "other_foods_avoided") if a]
+
+    usable = []
+    for row in query_all("SELECT * FROM food_library WHERE active = 1 ORDER BY category, name"):
+        if wants_vegan and not row["vegan"]:
+            continue
+        if wants_veg and not row["vegetarian"]:
+            continue
+        haystack = f"{row['name']} {row['allergens'] or ''}".lower()
+        if any(term in haystack for term in avoid):
+            continue
+        usable.append(row)
+    return usable
+
+
+def library_prompt_payload(member):
+    """The catalogue handed to the model, so it selects rather than invents."""
+    return {
+        "available_exercises": [
+            {
+                "name": row["name"],
+                "pattern": row["movement_pattern"],
+                "role": row["role"],
+                "primary_muscle": row["primary_muscle"],
+                "cues": [c for c in (row["cues"] or "").split("|") if c],
+            }
+            for row in available_exercises(member)
+        ],
+        "available_foods": [
+            {
+                "name": row["name"],
+                "category": row["category"],
+                "per_100g": {
+                    "kcal": row["kcal_100g"], "protein": row["protein_100g"],
+                    "carb": row["carb_100g"], "fat": row["fat_100g"],
+                },
+                "typical_portion": row["portion_label"],
+                "exchange_group": row["exchange_group"],
+            }
+            for row in available_foods(member)
+        ],
+    }
+
+
 def equipment_names():
     rows = query_all("SELECT name FROM equipment ORDER BY name")
     return [row["name"] for row in rows] or [name for name, *_rest in PREBUILT_EQUIPMENT]
@@ -2274,6 +2401,11 @@ def ai_plan_prompt(member, customizations=None, plan_type="both"):
             for s in slots
         ],
         "available_gym_equipment": equipment_names(),
+        # The curated catalogue, already filtered to this gym's equipment and
+        # this member's injuries and dietary restrictions. Handing the model a
+        # closed list is what stops it prescribing a machine we do not own or a
+        # food the member cannot eat.
+        **library_prompt_payload(member),
         "admin_customizations": customizations or [],
         "requirements": [
             "Return only valid JSON matching the schema below.",
@@ -2281,7 +2413,11 @@ def ai_plan_prompt(member, customizations=None, plan_type="both"):
             "explaining why THIS item suits THIS member, referencing their goal, "
             "experience, injuries, or schedule.",
             "Place items at the supplied slot times. Do not invent times.",
-            "Exercises must come from available_gym_equipment.",
+            "Exercises MUST be chosen from available_exercises by exact name. "
+            "Do not invent movements or use equipment not listed there.",
+            "Foods MUST be chosen from available_foods by exact name. That list "
+            "already excludes anything this member cannot eat.",
+            "Use the per_100g values given to compute portions; do not estimate macros.",
             "Cite an evidence grade and source where a nutrition claim is made.",
             "Do not diagnose, treat disease, or override medical advice.",
         ],
