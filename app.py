@@ -4,6 +4,7 @@ from functools import wraps
 from io import BytesIO
 import json
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -765,6 +766,111 @@ def _migrate_legacy_plans(cursor):
             )
 
 
+def _parse_rest_to_seconds(rest_text):
+    """Convert rest text like '2-3 min' or '90 sec' to average seconds."""
+    if not rest_text:
+        return None
+    rest_lower = rest_text.lower().strip()
+    range_match = re.search(r"(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*(min|sec)", rest_lower)
+    if range_match:
+        low, high, unit = range_match.groups()
+        avg = (float(low) + float(high)) / 2
+        if unit == "min":
+            return int(round(avg * 60))
+        return int(round(avg))
+    single_match = re.search(r"(\d+(?:\.\d+)?)\s*(min|sec)", rest_lower)
+    if single_match:
+        val, unit = single_match.groups()
+        if unit == "min":
+            return int(round(float(val) * 60))
+        return int(round(float(val)))
+    return None
+
+
+def _backfill_plan_item_prescriptions(cursor):
+    """Parse existing detail sentences into structured prescription fields.
+
+    Parseable strength rows are updated with extracted fields and detail is
+    regenerated from those fields.  Unparseable rows keep their original detail
+    and receive NULL fields.  Conditioning-like rows are marked as recovery.
+    """
+    rows = cursor.execute(
+        "SELECT id, item_type, title, detail FROM plan_items WHERE detail IS NOT NULL AND detail != ''"
+    ).fetchall()
+
+    for row_id, item_type, title, detail in rows:
+        # Skip if already backfilled (any structured field is present)
+        existing = cursor.execute(
+            "SELECT 1 FROM plan_items WHERE id = ? AND (sets IS NOT NULL OR set_count IS NOT NULL OR reps IS NOT NULL)",
+            (row_id,),
+        ).fetchone()
+        if existing:
+            continue
+
+        # Conditioning-like: duration-based, no set-and-rep structure
+        is_conditioning = (
+            (title and "conditioning" in title.lower())
+            or (
+                "min" in detail.lower()
+                and "sets" not in detail.lower()
+                and "reps" not in detail.lower()
+            )
+        )
+
+        if is_conditioning:
+            cursor.execute(
+                """
+                UPDATE plan_items
+                SET item_type = 'recovery',
+                    muscle_group = 'full body',
+                    rest_seconds = NULL,
+                    set_count = NULL
+                WHERE id = ?
+                """,
+                (row_id,),
+            )
+            continue
+
+        # Try to parse the known strength shape:
+        # "N sets × A-B reps · RPE X-Y · tempo T · rest R."
+        match = re.search(
+            r"(?P<sets>[\d-]+)\s+sets\s*[×x]\s*(?P<reps>[\d-]+)\s+reps\s*·\s*RPE\s+(?P<rpe>[\d-]+)"
+            r"(?:\s*\([^)]*\))?\s*·\s*tempo\s+(?P<tempo>[\d-]+)"
+            r"(?:\s*\([^)]*\))?\s*·\s*rest\s+(?P<rest>[^.]+)\.?",
+            detail,
+        )
+
+        if not match:
+            # Unparseable — keep original detail, all fields stay NULL
+            continue
+
+        sets = match.group("sets")
+        reps = match.group("reps")
+        rpe = match.group("rpe")
+        tempo = match.group("tempo")
+        rest = match.group("rest").strip()
+
+        # set_count is the top of the sets range
+        set_count = None
+        try:
+            set_count = max(int(p) for p in sets.split("-") if p.strip().isdigit())
+        except ValueError:
+            pass
+
+        rest_seconds = _parse_rest_to_seconds(rest)
+        new_detail = f"{sets} sets × {reps} reps · RPE {rpe} · tempo {tempo} · rest {rest}."
+
+        cursor.execute(
+            """
+            UPDATE plan_items
+            SET sets = ?, set_count = ?, reps = ?, rpe = ?, tempo = ?,
+                rest_seconds = ?, detail = ?
+            WHERE id = ?
+            """,
+            (sets, set_count, reps, rpe, tempo, rest_seconds, new_detail, row_id),
+        )
+
+
 def init_db():
     connection = sqlite3.connect(DB_PATH)
     cursor = connection.cursor()
@@ -1131,6 +1237,17 @@ def init_db():
             confidence TEXT,
             position INTEGER,
             provenance TEXT CHECK(provenance IN ('rule', 'ai', 'admin')),
+            sets TEXT,
+            set_count INTEGER,
+            reps TEXT,
+            rpe TEXT,
+            tempo TEXT,
+            rest_seconds INTEGER,
+            load_note TEXT,
+            muscle_group TEXT,
+            superset_group TEXT,
+            week INTEGER DEFAULT 1,
+            coach_note TEXT,
             FOREIGN KEY(plan_version_id) REFERENCES plan_versions(id) ON DELETE CASCADE
         );
 
@@ -1146,6 +1263,22 @@ def init_db():
             FOREIGN KEY(plan_version_id) REFERENCES plan_versions(id) ON DELETE CASCADE,
             FOREIGN KEY(reviewed_by) REFERENCES users(id)
         );
+
+        CREATE TABLE IF NOT EXISTS set_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_item_id INTEGER NOT NULL,
+            member_id INTEGER NOT NULL,
+            set_number INTEGER,
+            reps_done INTEGER,
+            load_kg REAL,
+            rpe_reported REAL,
+            logged_at TEXT,
+            FOREIGN KEY(plan_item_id) REFERENCES plan_items(id) ON DELETE CASCADE,
+            FOREIGN KEY(member_id) REFERENCES members(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_set_logs_member_plan_item
+        ON set_logs (member_id, plan_item_id);
         """
     )
 
@@ -1304,10 +1437,30 @@ def init_db():
             "ALTER TABLE plan_items ADD COLUMN provenance TEXT CHECK(provenance IN ('rule', 'ai', 'admin'))"
         )
 
+    extra_plan_item_columns = {
+        "sets": "TEXT",
+        "set_count": "INTEGER",
+        "reps": "TEXT",
+        "rpe": "TEXT",
+        "tempo": "TEXT",
+        "rest_seconds": "INTEGER",
+        "load_note": "TEXT",
+        "muscle_group": "TEXT",
+        "superset_group": "TEXT",
+        "week": "INTEGER DEFAULT 1",
+        "coach_note": "TEXT",
+    }
+    for column, column_type in extra_plan_item_columns.items():
+        if column not in plan_item_columns:
+            cursor.execute(f"ALTER TABLE plan_items ADD COLUMN {column} {column_type}")
+
     # Migrate legacy plan text into approved admin plan versions so nobody loses
     # a plan on upgrade. Idempotent: skip members who already have an approved
     # version for the plan type.
     _migrate_legacy_plans(cursor)
+
+    # Backfill existing plan_items that carry a parseable detail sentence.
+    _backfill_plan_item_prescriptions(cursor)
 
     user_columns = {row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()}
     if "must_change_password" not in user_columns:
