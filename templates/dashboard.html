@@ -21,12 +21,13 @@
       <input 
         type="text" 
         id="global-search-input" 
-        list="member-checkin-list" 
+        list="member-checkin-list" autocomplete="off" 
         placeholder="Type member name or phone number and press Enter..." 
         style="width: 100%; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--input-bg); color: var(--ink); font-size: 0.95rem;" 
         autocomplete="off" 
         required
       >
+        <small id="checkin-hint" class="empty-hint" aria-live="polite"></small>
       <datalist id="member-checkin-list">
         {% for m in all_members %}
         <option data-id="{{ m.id }}" value="{{ m.name }} ({{ m.phone }})"></option>
@@ -103,7 +104,7 @@
             <strong style="display: block; font-size: 0.9rem; color: var(--ink);">{{ plan.member_name }}</strong>
             <small style="color: var(--muted); text-transform: uppercase; font-size: 0.7rem;">{{ plan.plan_type }} plan · {{ plan.status }}</small>
           </div>
-          <a class="button primary" style="padding: 4px 10px; font-size: 0.75rem;" href="{{ url_for('member_detail', member_id=plan.member_id) }}">Review →</a>
+          <a class="button primary" style="padding: 4px 10px; font-size: 0.75rem;" href="{{ url_for('plan_review_view', member_id=plan.member_id) }}">Review →</a>
         </div>
         {% else %}
         <p class="empty" style="padding: 16px 0; margin: 0; font-size: 0.85rem;">All member plans are approved.</p>
@@ -213,16 +214,41 @@
   const checkinList = document.getElementById('member-checkin-list');
 
   if (checkinInput && checkinList) {
-    checkinInput.addEventListener('input', function() {
-      const val = this.value;
-      const options = checkinList.querySelectorAll('option');
-      let matchedId = '';
-      options.forEach(opt => {
-        if (opt.value === val) {
-          matchedId = opt.getAttribute('data-id');
-        }
-      });
-      hiddenMemberId.value = matchedId;
+    const options = [...checkinList.querySelectorAll('option')];
+
+    // Exact match only meant picking from the dropdown. Typing "Priya" and
+    // pressing Enter left the id empty and the form posted anyway, so nobody
+    // was checked in. Resolve on a unique prefix of the name or phone too.
+    function resolve(text) {
+      const value = (text || '').trim().toLowerCase();
+      if (!value) return { id: '', reason: 'empty' };
+      const exact = options.find(o => o.value.toLowerCase() === value);
+      if (exact) return { id: exact.getAttribute('data-id'), reason: 'exact' };
+      const partial = options.filter(o => o.value.toLowerCase().includes(value));
+      if (partial.length === 1) return { id: partial[0].getAttribute('data-id'), reason: 'unique' };
+      return { id: '', reason: partial.length ? 'ambiguous' : 'none' };
+    }
+
+    const hint = document.getElementById('checkin-hint');
+    function update() {
+      const match = resolve(checkinInput.value);
+      hiddenMemberId.value = match.id;
+      if (!hint) return;
+      if (match.reason === 'ambiguous') hint.textContent = 'More than one member matches - keep typing.';
+      else if (match.reason === 'none') hint.textContent = 'No member matches that.';
+      else if (match.id) hint.textContent = 'Ready to check in.';
+      else hint.textContent = '';
+    }
+
+    checkinInput.addEventListener('input', update);
+    checkinInput.form.addEventListener('submit', function (event) {
+      update();
+      if (!hiddenMemberId.value) {
+        // Never post an unresolved member: that is what wrote empty rows.
+        event.preventDefault();
+        if (hint) hint.textContent = 'Pick a member from the list before checking in.';
+        checkinInput.focus();
+      }
     });
   }
 </script>

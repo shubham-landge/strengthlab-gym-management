@@ -5003,6 +5003,12 @@ def attendance():
     if request.method == "POST":
         member_id = request.form["member_id"]
         member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+        if not member:
+            # The dashboard check-in box is free text: if it cannot resolve a name
+            # it posts an empty member_id. Without this guard that wrote an
+            # attendance row belonging to nobody, which then skewed the counts.
+            flash("Pick a member from the list before checking in.", "bad")
+            return redirect(request.referrer or url_for("attendance"))
         if current_user()["role"] == "trainer" and not can_view_member(current_user(), member):
             return redirect(url_for("attendance"))
         action = request.form["action"]
