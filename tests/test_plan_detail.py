@@ -696,3 +696,47 @@ def test_propose_next_load_holds_when_reps_below_top():
         assert "Hold" in result["reason"]
 
 
+# --- diet_quality_notes ------------------------------------------------------
+
+def test_diet_quality_notes_flags_low_protein_meal():
+    member = {"weight_kg": 60, "height_cm": 170, "age": 30, "gender": "Male"}
+    items = [
+        {
+            "item_type": "meal",
+            "title": "Snack",
+            "detail": "Ingredients: banana 1. Macros: ~100 kcal, protein 10 g, carbs 20 g.",
+            "slot_time": "10:00",
+        }
+    ]
+    notes = gym_app.diet_quality_notes(items, member)
+    assert any("protein" in n and "20.0 g" in n for n in notes)
+
+
+def test_diet_quality_notes_flags_feeding_gap_over_4_hours():
+    member = {"weight_kg": 80, "height_cm": 170, "age": 30, "gender": "Male"}
+    items = [
+        {"item_type": "meal", "title": "Breakfast", "detail": "Macros: protein 30 g.", "slot_time": "08:00"},
+        {"item_type": "meal", "title": "Lunch", "detail": "Macros: protein 40 g.", "slot_time": "13:00"},
+    ]
+    notes = gym_app.diet_quality_notes(items, member)
+    assert any("Gap of 5 h 0 min" in n for n in notes)
+
+
+def test_diet_quality_notes_returns_empty_when_all_fine():
+    member = {"weight_kg": 80, "height_cm": 170, "age": 30, "gender": "Male"}
+    items = [
+        {"item_type": "meal", "title": "Breakfast", "detail": "Macros: protein 30 g.", "slot_time": "08:00"},
+        {"item_type": "meal", "title": "Lunch", "detail": "Macros: protein 40 g.", "slot_time": "12:00"},
+    ]
+    assert gym_app.diet_quality_notes(items, member) == []
+
+
+def test_diet_notes_appear_in_generated_diet_text():
+    with gym_app.app.app_context():
+        member = gym_app.query_one("SELECT * FROM members LIMIT 1")
+        gym_app.execute("UPDATE members SET weight_kg = 50 WHERE id = ?", (member["id"],))
+        member = gym_app.query_one("SELECT * FROM members WHERE id = ?", (member["id"],))
+        gym_app.execute("DELETE FROM plan_items")
+        gym_app.execute("DELETE FROM plan_versions")
+        _, diet_text = gym_app.generate_rule_based_plans(member)
+        assert "Nutrition notes:" in diet_text

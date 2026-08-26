@@ -2318,6 +2318,97 @@ def propose_next_load(plan_item_id):
     }
 
 
+def _extract_protein_from_detail(detail):
+    """Extract protein grams from a detail string like '... protein 38 g ...' or '... 14 g protein ...'."""
+    lowered = (detail or "").lower()
+    # "protein 38 g"
+    match = re.search(r"protein\s+(\d+(?:\.\d+)?)\s*g", lowered)
+    if match:
+        return float(match.group(1))
+    # "14 g protein"
+    match = re.search(r"(\d+(?:\.\d+)?)\s*g\s+protein", lowered)
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def _estimate_protein_from_foods(detail, foods):
+    """Approximate protein by matching known foods in the detail string."""
+    if not detail:
+        return None
+    lowered = detail.lower()
+    total = 0.0
+    matched = False
+    for food in foods:
+        name = food[0].lower()
+        if name in lowered:
+            protein_100g = food[3]   # per FOOD_FIELDS
+            portion_g = food[10]     # per FOOD_FIELDS
+            total += protein_100g * portion_g / 100.0
+            matched = True
+    return total if matched else None
+
+
+def _parse_hhmm(text):
+    """Parse 'HH:MM' to minutes since midnight."""
+    if not text:
+        return None
+    try:
+        h, m = text.split(":")
+        return int(h) * 60 + int(m)
+    except ValueError:
+        return None
+
+
+def diet_quality_notes(diet_items, member):
+    """Return human-readable nutrition warnings for a list of diet items.
+
+    (a) Flag meals whose protein dose is below max(20, 0.25 g/kg body weight).
+        The ISSN position stand recommends ~0.25 g/kg or 20-40 g per serving.
+    (b) Flag gaps longer than 4 h (240 min) between consecutive meal slot_times.
+    """
+    notes = []
+    weight_kg = member_number(member, "weight_kg", 70)
+    protein_floor = max(20, 0.25 * weight_kg)
+
+    for item in diet_items:
+        if item.get("item_type") != "meal":
+            continue
+
+        detail = item.get("detail") or ""
+        protein_g = _extract_protein_from_detail(detail)
+
+        if protein_g is None:
+            from services import content_library
+            protein_g = _estimate_protein_from_foods(detail, content_library.FOODS)
+
+        if protein_g is not None and protein_g < protein_floor:
+            title = item.get("title", "Meal")
+            notes.append(
+                f"{title} protein ({protein_g:.1f} g) is below the per-serving "
+                f"floor of {protein_floor:.1f} g for this member."
+            )
+
+    meals = [
+        item for item in diet_items
+        if item.get("item_type") == "meal" and item.get("slot_time")
+    ]
+    meals.sort(key=lambda x: x["slot_time"])
+
+    for i in range(1, len(meals)):
+        prev_time = _parse_hhmm(meals[i - 1]["slot_time"])
+        curr_time = _parse_hhmm(meals[i]["slot_time"])
+        if prev_time is not None and curr_time is not None:
+            gap = curr_time - prev_time
+            if gap > 240:
+                notes.append(
+                    f"Gap of {gap // 60} h {gap % 60} min between "
+                    f"{meals[i - 1]['title']} and {meals[i]['title']}."
+                )
+
+    return notes
+
+
 def generate_rule_based_plans(member):
     from services import circadian_service
     from services.clinical_recommendation_service import get_or_create_health_profile
@@ -2629,6 +2720,9 @@ def generate_rule_based_plans(member):
     # --- legacy text for backward compatibility -------------------------------
     workout_text = _build_workout_text(member, blueprint, available, workout_items)
     diet_text = _build_diet_text(member, calories, protein, carbs, fat, food_preference, diet_items)
+    notes = diet_quality_notes(diet_items, member)
+    if notes:
+        diet_text += "\n\nNutrition notes:\n" + "\n".join("- " + n for n in notes)
     return workout_text, diet_text
 
 
