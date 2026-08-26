@@ -4,6 +4,7 @@ from functools import wraps
 from io import BytesIO
 import json
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -765,6 +766,111 @@ def _migrate_legacy_plans(cursor):
             )
 
 
+def _parse_rest_to_seconds(rest_text):
+    """Convert rest text like '2-3 min' or '90 sec' to average seconds."""
+    if not rest_text:
+        return None
+    rest_lower = rest_text.lower().strip()
+    range_match = re.search(r"(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*(min|sec)", rest_lower)
+    if range_match:
+        low, high, unit = range_match.groups()
+        avg = (float(low) + float(high)) / 2
+        if unit == "min":
+            return int(round(avg * 60))
+        return int(round(avg))
+    single_match = re.search(r"(\d+(?:\.\d+)?)\s*(min|sec)", rest_lower)
+    if single_match:
+        val, unit = single_match.groups()
+        if unit == "min":
+            return int(round(float(val) * 60))
+        return int(round(float(val)))
+    return None
+
+
+def _backfill_plan_item_prescriptions(cursor):
+    """Parse existing detail sentences into structured prescription fields.
+
+    Parseable strength rows are updated with extracted fields and detail is
+    regenerated from those fields.  Unparseable rows keep their original detail
+    and receive NULL fields.  Conditioning-like rows are marked as recovery.
+    """
+    rows = cursor.execute(
+        "SELECT id, item_type, title, detail FROM plan_items WHERE detail IS NOT NULL AND detail != ''"
+    ).fetchall()
+
+    for row_id, item_type, title, detail in rows:
+        # Skip if already backfilled (any structured field is present)
+        existing = cursor.execute(
+            "SELECT 1 FROM plan_items WHERE id = ? AND (sets IS NOT NULL OR set_count IS NOT NULL OR reps IS NOT NULL)",
+            (row_id,),
+        ).fetchone()
+        if existing:
+            continue
+
+        # Conditioning-like: duration-based, no set-and-rep structure
+        is_conditioning = (
+            (title and "conditioning" in title.lower())
+            or (
+                "min" in detail.lower()
+                and "sets" not in detail.lower()
+                and "reps" not in detail.lower()
+            )
+        )
+
+        if is_conditioning:
+            cursor.execute(
+                """
+                UPDATE plan_items
+                SET item_type = 'recovery',
+                    muscle_group = 'full body',
+                    rest_seconds = NULL,
+                    set_count = NULL
+                WHERE id = ?
+                """,
+                (row_id,),
+            )
+            continue
+
+        # Try to parse the known strength shape:
+        # "N sets × A-B reps · RPE X-Y · tempo T · rest R."
+        match = re.search(
+            r"(?P<sets>[\d-]+)\s+sets\s*[×x]\s*(?P<reps>[\d-]+)\s+reps\s*·\s*RPE\s+(?P<rpe>[\d-]+)"
+            r"(?:\s*\([^)]*\))?\s*·\s*tempo\s+(?P<tempo>[\d-]+)"
+            r"(?:\s*\([^)]*\))?\s*·\s*rest\s+(?P<rest>[^.]+)\.?",
+            detail,
+        )
+
+        if not match:
+            # Unparseable — keep original detail, all fields stay NULL
+            continue
+
+        sets = match.group("sets")
+        reps = match.group("reps")
+        rpe = match.group("rpe")
+        tempo = match.group("tempo")
+        rest = match.group("rest").strip()
+
+        # set_count is the top of the sets range
+        set_count = None
+        try:
+            set_count = max(int(p) for p in sets.split("-") if p.strip().isdigit())
+        except ValueError:
+            pass
+
+        rest_seconds = _parse_rest_to_seconds(rest)
+        new_detail = f"{sets} sets × {reps} reps · RPE {rpe} · tempo {tempo} · rest {rest}."
+
+        cursor.execute(
+            """
+            UPDATE plan_items
+            SET sets = ?, set_count = ?, reps = ?, rpe = ?, tempo = ?,
+                rest_seconds = ?, detail = ?
+            WHERE id = ?
+            """,
+            (sets, set_count, reps, rpe, tempo, rest_seconds, new_detail, row_id),
+        )
+
+
 def init_db():
     connection = sqlite3.connect(DB_PATH)
     cursor = connection.cursor()
@@ -1131,6 +1237,17 @@ def init_db():
             confidence TEXT,
             position INTEGER,
             provenance TEXT CHECK(provenance IN ('rule', 'ai', 'admin')),
+            sets TEXT,
+            set_count INTEGER,
+            reps TEXT,
+            rpe TEXT,
+            tempo TEXT,
+            rest_seconds INTEGER,
+            load_note TEXT,
+            muscle_group TEXT,
+            superset_group TEXT,
+            week INTEGER DEFAULT 1,
+            coach_note TEXT,
             FOREIGN KEY(plan_version_id) REFERENCES plan_versions(id) ON DELETE CASCADE
         );
 
@@ -1146,6 +1263,22 @@ def init_db():
             FOREIGN KEY(plan_version_id) REFERENCES plan_versions(id) ON DELETE CASCADE,
             FOREIGN KEY(reviewed_by) REFERENCES users(id)
         );
+
+        CREATE TABLE IF NOT EXISTS set_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_item_id INTEGER NOT NULL,
+            member_id INTEGER NOT NULL,
+            set_number INTEGER,
+            reps_done INTEGER,
+            load_kg REAL,
+            rpe_reported REAL,
+            logged_at TEXT,
+            FOREIGN KEY(plan_item_id) REFERENCES plan_items(id) ON DELETE CASCADE,
+            FOREIGN KEY(member_id) REFERENCES members(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_set_logs_member_plan_item
+        ON set_logs (member_id, plan_item_id);
         """
     )
 
@@ -1304,10 +1437,30 @@ def init_db():
             "ALTER TABLE plan_items ADD COLUMN provenance TEXT CHECK(provenance IN ('rule', 'ai', 'admin'))"
         )
 
+    extra_plan_item_columns = {
+        "sets": "TEXT",
+        "set_count": "INTEGER",
+        "reps": "TEXT",
+        "rpe": "TEXT",
+        "tempo": "TEXT",
+        "rest_seconds": "INTEGER",
+        "load_note": "TEXT",
+        "muscle_group": "TEXT",
+        "superset_group": "TEXT",
+        "week": "INTEGER DEFAULT 1",
+        "coach_note": "TEXT",
+    }
+    for column, column_type in extra_plan_item_columns.items():
+        if column not in plan_item_columns:
+            cursor.execute(f"ALTER TABLE plan_items ADD COLUMN {column} {column_type}")
+
     # Migrate legacy plan text into approved admin plan versions so nobody loses
     # a plan on upgrade. Idempotent: skip members who already have an approved
     # version for the plan type.
     _migrate_legacy_plans(cursor)
+
+    # Backfill existing plan_items that carry a parseable detail sentence.
+    _backfill_plan_item_prescriptions(cursor)
 
     user_columns = {row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()}
     if "must_change_password" not in user_columns:
@@ -1726,23 +1879,23 @@ def session_templates(split):
     if split == "Push / Pull / Legs":
         return [
             ("Day 1 - Push A", ["Dumbbell Flat Bench Press", "Dumbbell Shoulder Press", "Pec Deck Fly", "Seated Lateral Raise Machine", "Parallel Bar Dip"]),
-            ("Day 2 - Pull A", ["Lat Pulldown", "One-Arm Dumbbell Row", "Back Extension", "Preacher Curl", "Leg Raise Stand"]),
+            ("Day 2 - Pull A", ["Lat Pulldown", "One-Arm Dumbbell Row", "Back Extension", "Preacher Curl", "Hanging Knee Raise"]),
             ("Day 3 - Legs A", ["Leg Press", "Dumbbell Romanian Deadlift", "Seated Leg Curl", "Standing Calf Raise", "Cycle"]),
             ("Day 4 - Push B", ["Dumbbell Decline Bench Press", "Pec Deck Fly", "Seated Lateral Raise Machine", "Parallel Bar Dip"]),
-            ("Day 5 - Pull B", ["Chin-Up or Lat Pulldown", "Dumbbell Row", "Back Extension", "Preacher Curl", "Hanging Knee Raise"]),
+            ("Day 5 - Pull B", ["Chin-Up", "One-Arm Dumbbell Row", "Back Extension", "Preacher Curl", "Hanging Knee Raise"]),
             ("Day 6 - Legs B", ["Leg Press", "Dumbbell Split Squat", "Seated Leg Curl", "Seated Calf Raise", "Treadmill Incline Walk"]),
         ]
     if split == "Upper / Lower":
         return [
             ("Day 1 - Upper A", ["Dumbbell Flat Bench Press", "Lat Pulldown", "Pec Deck Fly", "Seated Lateral Raise Machine", "Preacher Curl"]),
             ("Day 2 - Lower A", ["Leg Press", "Dumbbell Romanian Deadlift", "Seated Leg Curl", "Standing Calf Raise", "Cycle"]),
-            ("Day 3 - Upper B", ["Dumbbell Decline Bench Press", "One-Arm Dumbbell Row", "Dumbbell Shoulder Press", "Lat Pulldown", "Leg Raise Stand"]),
+            ("Day 3 - Upper B", ["Dumbbell Decline Bench Press", "One-Arm Dumbbell Row", "Dumbbell Shoulder Press", "Lat Pulldown", "Hanging Knee Raise"]),
             ("Day 4 - Lower B", ["Leg Press", "Dumbbell Walking Lunge", "Back Extension", "Seated Calf Raise", "Treadmill Incline Walk"]),
         ]
     return [
         ("Day 1 - Full Body A", ["Leg Press", "Dumbbell Flat Bench Press", "Lat Pulldown", "Seated Leg Curl", "Back Extension"]),
         ("Day 2 - Full Body B", ["Dumbbell Goblet Squat", "Pec Deck Fly", "One-Arm Dumbbell Row", "Preacher Curl", "Parallel Bar Knee Raise"]),
-        ("Day 3 - Full Body C", ["Leg Press", "Dumbbell Bench Press", "Lat Pulldown", "Dumbbell Romanian Deadlift", "Seated or Standing Calf Raise"]),
+        ("Day 3 - Full Body C", ["Leg Press", "Dumbbell Flat Bench Press", "Lat Pulldown", "Dumbbell Romanian Deadlift", "Standing Calf Raise"]),
     ]
 
 
@@ -1815,6 +1968,59 @@ def recipe_cards(member, calories, protein, carbs, fat):
     ]
 
 
+_CLOSED_MUSCLE_GROUPS = {
+    "chest", "back", "lats", "front delts", "side delts", "rear delts",
+    "biceps", "triceps", "quads", "hamstrings", "glutes", "calves",
+    "abs", "lower back", "full body",
+}
+
+
+def _normalize_muscle_group(raw):
+    """Map raw primary_muscle onto the closed contract list."""
+    if not raw:
+        return None
+    lowered = raw.lower().strip()
+    if lowered in _CLOSED_MUSCLE_GROUPS:
+        return lowered
+    if lowered == "lower chest":
+        return "chest"
+    return lowered
+
+
+def render_detail_from_fields(item):
+    """Reproduce the legacy detail shape from structured prescription fields."""
+    if item.get("item_type") == "recovery" or item.get("sets") is None:
+        return item.get("detail") or ""
+    sets = item.get("sets", "")
+    reps = item.get("reps", "")
+    rpe = item.get("rpe", "")
+    tempo = item.get("tempo", "")
+    rest_seconds = item.get("rest_seconds")
+    if rest_seconds is not None:
+        if rest_seconds >= 60:
+            minutes = rest_seconds / 60
+            if minutes == int(minutes):
+                rest = f"{int(minutes)} min"
+            else:
+                rest = f"{minutes:.1f} min"
+        else:
+            rest = f"{rest_seconds} sec"
+    else:
+        rest = ""
+    parts = []
+    if sets and reps:
+        parts.append(f"{sets} sets × {reps} reps")
+    if rpe:
+        parts.append(f"RPE {rpe}")
+    if tempo:
+        parts.append(f"tempo {tempo}")
+    if rest:
+        parts.append(f"rest {rest}")
+    if parts:
+        return " · ".join(parts) + "."
+    return item.get("detail") or ""
+
+
 def _persist_structured_plan(member_id, plan_type, items, provenance="rule", model=None, status="draft", blocked_reason=None, conn=None):
     """Insert a plan_version and its plan_items. Does not touch approved rows.
 
@@ -1827,6 +2033,32 @@ def _persist_structured_plan(member_id, plan_type, items, provenance="rule", mod
     if own_txn:
         conn = db()
     try:
+        # Coach-note survival: copy from the most recent existing version
+        # BEFORE inserting the new one, otherwise the query returns itself.
+        coach_notes = {}
+        try:
+            prev_version = conn.execute(
+                """
+                SELECT id FROM plan_versions
+                WHERE member_id = ? AND plan_type = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (member_id, plan_type),
+            ).fetchone()
+            if prev_version:
+                for row in conn.execute(
+                    """
+                    SELECT day_label, slot_time, title, coach_note
+                    FROM plan_items
+                    WHERE plan_version_id = ? AND coach_note IS NOT NULL AND coach_note != ''
+                    """,
+                    (prev_version["id"],),
+                ).fetchall():
+                    key = (row["day_label"], row["slot_time"], row["title"])
+                    coach_notes[key] = row["coach_note"]
+        except Exception:
+            pass
+
         cursor = conn.execute(
             """
             INSERT INTO plan_versions (member_id, plan_type, status, provenance, model, generated_at, blocked_reason)
@@ -1835,14 +2067,19 @@ def _persist_structured_plan(member_id, plan_type, items, provenance="rule", mod
             (member_id, plan_type, status, provenance, model, generated_at, blocked_reason),
         )
         version_id = cursor.lastrowid
+
         for pos, item in enumerate(items):
+            key = (item.get("day_label"), item.get("slot_time"), item.get("title"))
+            coach_note = coach_notes.get(key)
             conn.execute(
                 """
                 INSERT INTO plan_items (
                     plan_version_id, day_label, slot_time, item_type, title, detail,
-                    rationale, evidence_grade, evidence_source, source_url, confidence, position
+                    rationale, evidence_grade, evidence_source, source_url, confidence, position,
+                    sets, set_count, reps, rpe, tempo, rest_seconds, load_note,
+                    muscle_group, superset_group, week, coach_note
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     version_id,
@@ -1857,6 +2094,17 @@ def _persist_structured_plan(member_id, plan_type, items, provenance="rule", mod
                     item.get("source_url"),
                     item.get("confidence"),
                     item.get("position", pos),
+                    item.get("sets"),
+                    item.get("set_count"),
+                    item.get("reps"),
+                    item.get("rpe"),
+                    item.get("tempo"),
+                    item.get("rest_seconds"),
+                    item.get("load_note"),
+                    item.get("muscle_group"),
+                    item.get("superset_group"),
+                    item.get("week", 1),
+                    coach_note,
                 ),
             )
         if own_txn:
@@ -1930,6 +2178,212 @@ def _build_diet_text(member, calories, protein, carbs, fat, food_preference, ite
     return "\n".join(lines)
 
 
+def weekly_volume(member_id, plan_version_id):
+    """Hard sets per muscle group for one plan version.
+
+    Returns [{"muscle_group": str, "sets": int, "min": int, "max": int}, ...]
+    where min/max are the productive range for that muscle (10-20 for most,
+    wider for large groups). Sorted by muscle_group.
+
+    Range rationale: trained lifters typically need ~10-20 hard sets/week/muscle
+    for productive hypertrophy; larger groups (legs, back) tolerate more volume
+    and are capped at 25 here.
+    """
+    rows = query_all(
+        """
+        SELECT pi.muscle_group, SUM(pi.set_count) AS sets
+        FROM plan_items pi
+        JOIN plan_versions pv ON pi.plan_version_id = pv.id
+        WHERE pi.plan_version_id = ?
+          AND pv.member_id = ?
+          AND pi.item_type = 'exercise'
+        GROUP BY pi.muscle_group
+        ORDER BY pi.muscle_group
+        """,
+        (plan_version_id, member_id),
+    )
+    large_groups = {"quads", "hamstrings", "glutes", "lats", "back", "chest"}
+    result = []
+    for row in rows:
+        mg = row["muscle_group"]
+        if not mg:
+            # Unmapped movement: counting its sets against no muscle would show
+            # a nameless row in the coach's volume table.
+            continue
+        max_sets = 25 if mg in large_groups else 20
+        sets_done = row["sets"] or 0
+        # The UI renders this directly; keep the vocabulary fixed.
+        if sets_done < 10:
+            status = "under"
+        elif sets_done > max_sets:
+            status = "over"
+        else:
+            status = "optimal"
+        result.append({
+            "muscle_group": mg,
+            "sets": sets_done,
+            "min": 10,
+            "max": max_sets,
+            "status": status,
+        })
+    return result
+
+
+def propose_next_load(plan_item_id):
+    """Propose the next load for an exercise based on the most recent set log."""
+    log = query_one(
+        """
+        SELECT reps_done, load_kg
+        FROM set_logs
+        WHERE plan_item_id = ?
+        ORDER BY logged_at DESC, id DESC
+        LIMIT 1
+        """,
+        (plan_item_id,),
+    )
+    item = query_one(
+        "SELECT reps, title FROM plan_items WHERE id = ?",
+        (plan_item_id,),
+    )
+    if item is None:
+        return {
+            "plan_item_id": plan_item_id,
+            "last_load_kg": None,
+            "suggested_load_kg": None,
+            "reason": "Plan item not found.",
+        }
+
+    if log is None:
+        return {
+            "plan_item_id": plan_item_id,
+            "last_load_kg": None,
+            "suggested_load_kg": None,
+            "reason": "No sets logged yet.",
+        }
+
+    reps_done = log["reps_done"]
+    last_load_kg = log["load_kg"]
+
+    # Determine prescribed top rep from reps column (e.g. "6-10" -> 10)
+    reps_str = item["reps"] or ""
+    top_rep = None
+    if reps_str:
+        match = re.search(r"(\d+)(?:\s*-\s*(\d+))?", reps_str)
+        if match:
+            top_rep = int(match.group(2)) if match.group(2) else int(match.group(1))
+
+    if top_rep is not None and reps_done is not None and reps_done >= top_rep:
+        increment = 5.0 if "leg press" in (item["title"] or "").lower() else 2.5
+        suggested = (last_load_kg or 0) + increment
+        return {
+            "plan_item_id": plan_item_id,
+            "last_load_kg": last_load_kg,
+            "suggested_load_kg": suggested,
+            "reason": (
+                f"Completed top of rep range ({reps_done} >= {top_rep}). "
+                f"Add {increment} kg."
+            ),
+        }
+
+    return {
+        "plan_item_id": plan_item_id,
+        "last_load_kg": last_load_kg,
+        "suggested_load_kg": last_load_kg,
+        "reason": "Hold current load.",
+    }
+
+
+def _extract_protein_from_detail(detail):
+    """Extract protein grams from a detail string like '... protein 38 g ...' or '... 14 g protein ...'."""
+    lowered = (detail or "").lower()
+    # "protein 38 g"
+    match = re.search(r"protein\s+(\d+(?:\.\d+)?)\s*g", lowered)
+    if match:
+        return float(match.group(1))
+    # "14 g protein"
+    match = re.search(r"(\d+(?:\.\d+)?)\s*g\s+protein", lowered)
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def _estimate_protein_from_foods(detail, foods):
+    """Approximate protein by matching known foods in the detail string."""
+    if not detail:
+        return None
+    lowered = detail.lower()
+    total = 0.0
+    matched = False
+    for food in foods:
+        name = food[0].lower()
+        if name in lowered:
+            protein_100g = food[3]   # per FOOD_FIELDS
+            portion_g = food[10]     # per FOOD_FIELDS
+            total += protein_100g * portion_g / 100.0
+            matched = True
+    return total if matched else None
+
+
+def _parse_hhmm(text):
+    """Parse 'HH:MM' to minutes since midnight."""
+    if not text:
+        return None
+    try:
+        h, m = text.split(":")
+        return int(h) * 60 + int(m)
+    except ValueError:
+        return None
+
+
+def diet_quality_notes(diet_items, member):
+    """Return human-readable nutrition warnings for a list of diet items.
+
+    (a) Flag meals whose protein dose is below max(20, 0.25 g/kg body weight).
+        The ISSN position stand recommends ~0.25 g/kg or 20-40 g per serving.
+    (b) Flag gaps longer than 4 h (240 min) between consecutive meal slot_times.
+    """
+    notes = []
+    weight_kg = member_number(member, "weight_kg", 70)
+    protein_floor = max(20, 0.25 * weight_kg)
+
+    for item in diet_items:
+        if item.get("item_type") != "meal":
+            continue
+
+        detail = item.get("detail") or ""
+        protein_g = _extract_protein_from_detail(detail)
+
+        if protein_g is None:
+            from services import content_library
+            protein_g = _estimate_protein_from_foods(detail, content_library.FOODS)
+
+        if protein_g is not None and protein_g < protein_floor:
+            title = item.get("title", "Meal")
+            notes.append(
+                f"{title} protein ({protein_g:.1f} g) is below the per-serving "
+                f"floor of {protein_floor:.1f} g for this member."
+            )
+
+    meals = [
+        item for item in diet_items
+        if item.get("item_type") == "meal" and item.get("slot_time")
+    ]
+    meals.sort(key=lambda x: x["slot_time"])
+
+    for i in range(1, len(meals)):
+        prev_time = _parse_hhmm(meals[i - 1]["slot_time"])
+        curr_time = _parse_hhmm(meals[i]["slot_time"])
+        if prev_time is not None and curr_time is not None:
+            gap = curr_time - prev_time
+            if gap > 240:
+                notes.append(
+                    f"Gap of {gap // 60} h {gap % 60} min between "
+                    f"{meals[i - 1]['title']} and {meals[i]['title']}."
+                )
+
+    return notes
+
+
 def generate_rule_based_plans(member):
     from services import circadian_service
     from services.clinical_recommendation_service import get_or_create_health_profile
@@ -1944,6 +2398,12 @@ def generate_rule_based_plans(member):
     available = ", ".join(equipment_names())
     calories, protein, carbs, fat = nutrition_targets(member, goal)
     food_preference = member_text(member, "food_preference", "balanced local meals")
+
+    # Muscle-group lookup for every exercise in the library.
+    exercise_muscles = {
+        row["name"].lower(): row["primary_muscle"]
+        for row in query_all("SELECT name, primary_muscle FROM exercise_library WHERE active = 1")
+    }
 
     wake = member_text(member, "wake_time") or None
     workout_time = member_text(member, "workout_time") or None
@@ -2019,7 +2479,40 @@ def generate_rule_based_plans(member):
             seen_exercises.add(exercise)
             pos += 1
             prescription = programming.prescribe(exercise, goal, week=1)
-            detail = programming.format_prescription(prescription)
+            role = prescription["role"]
+
+            # Extract rpe range (e.g. "6-7" from "RPE 6-7 (4-3 reps in reserve)")
+            rpe_match = re.search(r"RPE\s+([\d-]+)", prescription["rpe"])
+            rpe = rpe_match.group(1) if rpe_match else None
+
+            # Extract tempo code when present; keep descriptive text for core.
+            tempo_match = re.search(r"^([\d-]+)", prescription["tempo"])
+            if tempo_match and role in (programming.COMPOUND, programming.ISOLATION):
+                tempo = tempo_match.group(1)
+            elif role == programming.CORE:
+                tempo = prescription["tempo"]
+            else:
+                tempo = None
+
+            # Compute set_count from sets range
+            sets = prescription["sets"]
+            try:
+                set_count = max(int(p) for p in sets.split("-") if p.strip().isdigit())
+            except ValueError:
+                set_count = None
+
+            rest_seconds = _parse_rest_to_seconds(prescription["rest"])
+            muscle_group = _normalize_muscle_group(exercise_muscles.get(exercise.lower()))
+
+            if role == programming.COMPOUND:
+                load_note = "Select a load that allows all prescribed reps with solid form."
+            elif role == programming.ISOLATION:
+                load_note = "Use the smallest weight increment available; focus on feel."
+            elif role == programming.CORE:
+                load_note = "Add load only when you can complete every rep without momentum."
+            else:
+                load_note = None
+
             rationale = (
                 f"{prescription['role'].title()} movement for {day_label}. "
                 f"Chosen for goal '{goal}' at {level} level. "
@@ -2029,28 +2522,52 @@ def generate_rule_based_plans(member):
                 rationale += f"Modified around injury note: {injury_text}. Use pain-free range and trainer clearance."
             else:
                 rationale += "Pain-free range of motion required; stop if joint pain appears."
-            workout_items.append({
+
+            item = {
                 "day_label": day_label,
                 "slot_time": training_slot["slot_time"],
-                "item_type": "exercise",
+                "item_type": "exercise" if role != programming.CONDITIONING else "recovery",
                 "title": exercise,
-                "detail": detail,
+                "sets": None if role == programming.CONDITIONING else sets,
+                "set_count": None if role == programming.CONDITIONING else set_count,
+                "reps": prescription["reps"],
+                "rpe": None if role == programming.CONDITIONING else rpe,
+                "tempo": tempo,
+                "rest_seconds": None if role == programming.CONDITIONING else rest_seconds,
+                "load_note": load_note,
+                "muscle_group": "full body" if role == programming.CONDITIONING else muscle_group,
+                "superset_group": None,
+                "week": 1,
                 "rationale": rationale,
                 "confidence": "High",
                 "position": pos,
-            })
+            }
+            item["detail"] = render_detail_from_fields(item)
+            workout_items.append(item)
 
         # Conditioning
         cond_pos = len(exercises) + 1
         cond_rationale = f"Matched to goal '{goal}' and {level} capacity. {blueprint['conditioning']}"
         if injury_text and injury_text.lower() not in {"none", "no", "na"}:
             cond_rationale += f" Modified around injury note: {injury_text}."
+        cond_prescription = programming.prescribe("Conditioning", goal, week=1)
+        cond_reps = cond_prescription["reps"]
         workout_items.append({
             "day_label": day_label,
             "slot_time": training_slot["slot_time"],
-            "item_type": "exercise",
+            "item_type": "recovery",
             "title": "Conditioning",
-            "detail": blueprint["conditioning"],
+            "sets": None,
+            "set_count": None,
+            "reps": cond_reps,
+            "rpe": None,
+            "tempo": None,
+            "rest_seconds": None,
+            "load_note": None,
+            "muscle_group": "full body",
+            "superset_group": None,
+            "week": 1,
+            "detail": cond_reps,
             "rationale": cond_rationale,
             "confidence": "High",
             "position": cond_pos,
@@ -2178,6 +2695,9 @@ def generate_rule_based_plans(member):
     # --- legacy text for backward compatibility -------------------------------
     workout_text = _build_workout_text(member, blueprint, available, workout_items)
     diet_text = _build_diet_text(member, calories, protein, carbs, fat, food_preference, diet_items)
+    notes = diet_quality_notes(diet_items, member)
+    if notes:
+        diet_text += "\n\nNutrition notes:\n" + "\n".join("- " + n for n in notes)
     return workout_text, diet_text
 
 
@@ -5700,6 +6220,225 @@ def reports():
     )
 
 
+@app.route("/settings/catalogue")
+@role_required("admin", "owner")
+def catalogue():
+    tab = request.args.get("tab", "movements")
+    q = request.args.get("q", "").strip()
+
+    movements_query = "SELECT * FROM exercise_library"
+    foods_query = "SELECT * FROM food_library"
+    m_params = []
+    f_params = []
+
+    if q:
+        movements_query += " WHERE name LIKE ? OR movement_pattern LIKE ? OR primary_muscle LIKE ?"
+        term = f"%{q}%"
+        m_params = [term, term, term]
+
+        foods_query += " WHERE name LIKE ? OR category LIKE ? OR exchange_group LIKE ?"
+        f_params = [term, term, term]
+
+    movements_query += " ORDER BY active DESC, name ASC"
+    foods_query += " ORDER BY active DESC, name ASC"
+
+    movements = query_all(movements_query, tuple(m_params))
+    foods = query_all(foods_query, tuple(f_params))
+
+    analyzed_foods = []
+    for food in foods:
+        f_dict = dict(food)
+        kcal = f_dict.get("kcal_100g") or 0
+        p = f_dict.get("protein_100g") or 0
+        c = f_dict.get("carb_100g") or 0
+        f = f_dict.get("fat_100g") or 0
+        expected_kcal = (p * 4) + (c * 4) + (f * 9)
+        discrepancy = False
+        if expected_kcal > 0 and kcal > 0:
+            diff_ratio = abs(kcal - expected_kcal) / max(expected_kcal, 1)
+            if diff_ratio > 0.20:
+                discrepancy = True
+        f_dict["macro_kcal"] = round(expected_kcal, 1)
+        f_dict["discrepancy_warning"] = discrepancy
+        analyzed_foods.append(f_dict)
+
+    return render_template(
+        "catalogue.html",
+        tab=tab,
+        q=q,
+        movements=movements,
+        foods=analyzed_foods,
+    )
+
+
+@app.route("/settings/catalogue/movements/add", methods=["POST"])
+@role_required("admin", "owner")
+def add_movement():
+    name = request.form["name"].strip()
+    if not name:
+        flash("Movement name cannot be empty.", "bad")
+        return redirect(url_for("catalogue", tab="movements"))
+
+    try:
+        execute(
+            """
+            INSERT INTO exercise_library
+            (name, movement_pattern, role, primary_muscle, secondary_muscles, equipment, level, contraindications, cues, regression, progression, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (
+                name,
+                request.form.get("movement_pattern"),
+                request.form.get("role"),
+                request.form.get("primary_muscle"),
+                request.form.get("secondary_muscles"),
+                request.form.get("equipment"),
+                request.form.get("level"),
+                request.form.get("contraindications"),
+                request.form.get("cues"),
+                request.form.get("regression"),
+                request.form.get("progression"),
+            ),
+        )
+        flash(f"Movement '{name}' added successfully.", "good")
+    except sqlite3.IntegrityError:
+        flash(f"Movement '{name}' already exists.", "bad")
+    return redirect(url_for("catalogue", tab="movements"))
+
+
+@app.route("/settings/catalogue/movements/<int:movement_id>/edit", methods=["POST"])
+@role_required("admin", "owner")
+def edit_movement(movement_id):
+    name = request.form["name"].strip()
+    if not name:
+        flash("Movement name cannot be empty.", "bad")
+        return redirect(url_for("catalogue", tab="movements"))
+
+    execute(
+        """
+        UPDATE exercise_library
+        SET name = ?, movement_pattern = ?, role = ?, primary_muscle = ?, secondary_muscles = ?,
+            equipment = ?, level = ?, contraindications = ?, cues = ?, regression = ?, progression = ?
+        WHERE id = ?
+        """,
+        (
+            name,
+            request.form.get("movement_pattern"),
+            request.form.get("role"),
+            request.form.get("primary_muscle"),
+            request.form.get("secondary_muscles"),
+            request.form.get("equipment"),
+            request.form.get("level"),
+            request.form.get("contraindications"),
+            request.form.get("cues"),
+            request.form.get("regression"),
+            request.form.get("progression"),
+            movement_id,
+        ),
+    )
+    flash(f"Movement '{name}' updated.", "good")
+    return redirect(url_for("catalogue", tab="movements"))
+
+
+@app.route("/settings/catalogue/movements/<int:movement_id>/toggle", methods=["POST"])
+@role_required("admin", "owner")
+def toggle_movement(movement_id):
+    item = query_one("SELECT * FROM exercise_library WHERE id = ?", (movement_id,))
+    if item:
+        new_active = 0 if item["active"] else 1
+        execute("UPDATE exercise_library SET active = ? WHERE id = ?", (new_active, movement_id))
+        status_str = "activated" if new_active else "deactivated"
+        flash(f"Movement '{item['name']}' {status_str}.", "good")
+    return redirect(url_for("catalogue", tab="movements"))
+
+
+@app.route("/settings/catalogue/foods/add", methods=["POST"])
+@role_required("admin", "owner")
+def add_food():
+    name = request.form["name"].strip()
+    if not name:
+        flash("Food name cannot be empty.", "bad")
+        return redirect(url_for("catalogue", tab="foods"))
+
+    try:
+        execute(
+            """
+            INSERT INTO food_library
+            (name, category, kcal_100g, protein_100g, carb_100g, fat_100g, vegetarian, vegan, allergens, exchange_group, typical_portion_g, portion_label, source, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (
+                name,
+                request.form.get("category"),
+                float(request.form.get("kcal_100g") or 0),
+                float(request.form.get("protein_100g") or 0),
+                float(request.form.get("carb_100g") or 0),
+                float(request.form.get("fat_100g") or 0),
+                1 if request.form.get("vegetarian") else 0,
+                1 if request.form.get("vegan") else 0,
+                request.form.get("allergens"),
+                request.form.get("exchange_group"),
+                float(request.form.get("typical_portion_g") or 100),
+                request.form.get("portion_label"),
+                request.form.get("source") or "User Added",
+            ),
+        )
+        flash(f"Food '{name}' added successfully.", "good")
+    except sqlite3.IntegrityError:
+        flash(f"Food '{name}' already exists.", "bad")
+    return redirect(url_for("catalogue", tab="foods"))
+
+
+@app.route("/settings/catalogue/foods/<int:food_id>/edit", methods=["POST"])
+@role_required("admin", "owner")
+def edit_food(food_id):
+    name = request.form["name"].strip()
+    if not name:
+        flash("Food name cannot be empty.", "bad")
+        return redirect(url_for("catalogue", tab="foods"))
+
+    execute(
+        """
+        UPDATE food_library
+        SET name = ?, category = ?, kcal_100g = ?, protein_100g = ?, carb_100g = ?, fat_100g = ?,
+            vegetarian = ?, vegan = ?, allergens = ?, exchange_group = ?, typical_portion_g = ?,
+            portion_label = ?, source = ?
+        WHERE id = ?
+        """,
+        (
+            name,
+            request.form.get("category"),
+            float(request.form.get("kcal_100g") or 0),
+            float(request.form.get("protein_100g") or 0),
+            float(request.form.get("carb_100g") or 0),
+            float(request.form.get("fat_100g") or 0),
+            1 if request.form.get("vegetarian") else 0,
+            1 if request.form.get("vegan") else 0,
+            request.form.get("allergens"),
+            request.form.get("exchange_group"),
+            float(request.form.get("typical_portion_g") or 100),
+            request.form.get("portion_label"),
+            request.form.get("source"),
+            food_id,
+        ),
+    )
+    flash(f"Food '{name}' updated.", "good")
+    return redirect(url_for("catalogue", tab="foods"))
+
+
+@app.route("/settings/catalogue/foods/<int:food_id>/toggle", methods=["POST"])
+@role_required("admin", "owner")
+def toggle_food(food_id):
+    item = query_one("SELECT * FROM food_library WHERE id = ?", (food_id,))
+    if item:
+        new_active = 0 if item["active"] else 1
+        execute("UPDATE food_library SET active = ? WHERE id = ?", (new_active, food_id))
+        status_str = "activated" if new_active else "deactivated"
+        flash(f"Food '{item['name']}' {status_str}.", "good")
+    return redirect(url_for("catalogue", tab="foods"))
+
+
+
 @app.route("/members/<int:member_id>/diet.pdf")
 @login_required
 def diet_pdf(member_id):
@@ -6487,46 +7226,218 @@ def recommendations(member_id):
     )
 
 
-@app.route("/members/<int:member_id>/plan")
+def ensure_plan_views_schema():
+    conn = db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS set_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_item_id INTEGER,
+            member_id INTEGER,
+            set_number INTEGER,
+            reps_done INTEGER,
+            load_kg REAL,
+            rpe_reported REAL,
+            logged_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(plan_item_id) REFERENCES plan_items(id) ON DELETE CASCADE,
+            FOREIGN KEY(member_id) REFERENCES members(id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_set_logs_member_item ON set_logs(member_id, plan_item_id)")
+
+    columns_info = conn.execute("PRAGMA table_info(plan_items)").fetchall()
+    existing_cols = {col["name"] for col in columns_info}
+
+    new_cols = [
+        ("sets", "TEXT"),
+        ("set_count", "INTEGER"),
+        ("reps", "TEXT"),
+        ("rpe", "TEXT"),
+        ("tempo", "TEXT"),
+        ("rest_seconds", "INTEGER"),
+        ("load_note", "TEXT"),
+        ("muscle_group", "TEXT"),
+        ("superset_group", "TEXT"),
+        ("week", "INTEGER DEFAULT 1"),
+        ("coach_note", "TEXT"),
+    ]
+    for col_name, col_type in new_cols:
+        if col_name not in existing_cols:
+            conn.execute(f"ALTER TABLE plan_items ADD COLUMN {col_name} {col_type}")
+    conn.commit()
+
+
+@app.route("/members/<int:member_id>/log-set", methods=["POST"])
 @login_required
-def member_plan_view(member_id):
+def log_member_set(member_id):
+    ensure_plan_views_schema()
     member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
     if not member or not can_view_member(current_user(), member):
         return redirect(url_for("index"))
 
-    tables = {row[0] for row in query_all("SELECT name FROM sqlite_master WHERE type='table'")}
-    plan = None
-    plan_items = []
+    plan_item_id = request.form.get("plan_item_id")
+    set_number = int(request.form.get("set_number") or 1)
+    reps_done = int(request.form.get("reps_done") or 0)
+    load_kg = float(request.form.get("load_kg")) if request.form.get("load_kg") else None
+    rpe_reported = float(request.form.get("rpe_reported")) if request.form.get("rpe_reported") else None
 
-    if "plan_versions" in tables:
-        plan = query_one(
-            "SELECT * FROM plan_versions WHERE member_id = ? AND status = 'approved' ORDER BY id DESC LIMIT 1",
-            (member_id,)
+    execute(
+        """
+        INSERT INTO set_logs (plan_item_id, member_id, set_number, reps_done, load_kg, rpe_reported, logged_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (plan_item_id, member_id, set_number, reps_done, load_kg, rpe_reported, datetime.now().isoformat()),
+    )
+    flash(f"Set {set_number} logged successfully.", "good")
+    return redirect(url_for("member_plan_view", member_id=member_id))
+
+
+@app.route("/members/<int:member_id>/plan")
+@login_required
+def member_plan_view(member_id):
+    ensure_plan_views_schema()
+    member = query_one("SELECT * FROM members WHERE id = ?", (member_id,))
+    if not member or not can_view_member(current_user(), member):
+        return redirect(url_for("index"))
+
+    plan = query_one(
+        "SELECT * FROM plan_versions WHERE member_id = ? AND status = 'approved' ORDER BY id DESC LIMIT 1",
+        (member_id,)
+    )
+    plan_items = []
+    grouped_items = []
+    logged_sets_by_item = {}
+    last_logged_perf = {}
+
+    if plan:
+        raw_items = query_all(
+            "SELECT * FROM plan_items WHERE plan_version_id = ? ORDER BY position ASC, slot_time ASC",
+            (plan["id"],)
         )
-        if plan and "plan_items" in tables:
-            plan_items = query_all(
-                "SELECT * FROM plan_items WHERE plan_version_id = ? ORDER BY position ASC, slot_time ASC",
-                (plan["id"],)
+        plan_items = [dict(i) for i in raw_items]
+
+        # Fetch logged sets for these items
+        for item in plan_items:
+            item_logs = query_all(
+                "SELECT * FROM set_logs WHERE plan_item_id = ? AND member_id = ? ORDER BY set_number ASC",
+                (item["id"], member_id)
             )
+            logged_sets_by_item[item["id"]] = [dict(l) for l in item_logs]
+
+            # Get last performance across previous logs for same exercise title
+            last = query_one(
+                """
+                SELECT set_logs.* FROM set_logs
+                JOIN plan_items ON plan_items.id = set_logs.plan_item_id
+                WHERE set_logs.member_id = ? AND plan_items.title = ?
+                ORDER BY set_logs.id DESC LIMIT 1
+                """,
+                (member_id, item["title"])
+            )
+            if last:
+                last_logged_perf[item["id"]] = f"{last['load_kg'] or 0} kg × {last['reps_done']}"
+
+        # Group superset items
+        i = 0
+        while i < len(plan_items):
+            item = plan_items[i]
+            sg = item.get("superset_group")
+            if sg:
+                group = [item]
+                j = i + 1
+                while j < len(plan_items) and plan_items[j].get("superset_group") == sg:
+                    group.append(plan_items[j])
+                    j += 1
+                grouped_items.append({"is_superset": True, "group_name": sg, "item_list": group})
+                i = j
+            else:
+                grouped_items.append({"is_superset": False, "group_name": None, "item_list": [item]})
+                i += 1
 
     return render_template(
         "member_plan.html",
         member=member,
         plan=plan,
-        plan_items=plan_items
+        plan_items=plan_items,
+        grouped_items=grouped_items,
+        logged_sets_by_item=logged_sets_by_item,
+        last_logged_perf=last_logged_perf,
     )
+
+
+@app.route("/members/<int:member_id>/plan-items/<int:item_id>/update-cell", methods=["POST"])
+@role_required("admin", "trainer")
+def update_plan_item_cell(member_id, item_id):
+    ensure_plan_views_schema()
+    item = query_one("SELECT * FROM plan_items WHERE id = ?", (item_id,))
+    if not item:
+        return redirect(url_for("plan_review_view", member_id=member_id))
+
+    field = request.form.get("field")
+    value = request.form.get("value")
+
+    allowed_fields = {
+        "title", "sets", "set_count", "reps", "rpe", "tempo", "rest_seconds",
+        "load_note", "muscle_group", "superset_group", "week", "coach_note", "detail"
+    }
+
+    if field in allowed_fields:
+        execute(
+            f"UPDATE plan_items SET {field} = ?, provenance = 'admin' WHERE id = ?",
+            (value, item_id),
+        )
+        flash(f"Updated {field} for {item['title']}.", "good")
+
+    return redirect(url_for("plan_review_view", member_id=member_id))
+
+
+@app.route("/members/<int:member_id>/plan-items/<int:item_id>/delete", methods=["POST"])
+@role_required("admin", "trainer")
+def delete_plan_item(member_id, item_id):
+    ensure_plan_views_schema()
+    execute("DELETE FROM plan_items WHERE id = ?", (item_id,))
+    flash("Exercise removed from plan.", "good")
+    return redirect(url_for("plan_review_view", member_id=member_id))
+
+
+@app.route("/members/<int:member_id>/plan-items/add", methods=["POST"])
+@role_required("admin", "trainer")
+def add_plan_item_to_version(member_id):
+    ensure_plan_views_schema()
+    plan_version_id = request.form.get("plan_version_id")
+    title = request.form.get("title", "").strip()
+    day_label = request.form.get("day_label", "Day 1")
+    sets = request.form.get("sets", "3")
+    reps = request.form.get("reps", "8-12")
+    rpe = request.form.get("rpe", "7-8")
+    tempo = request.form.get("tempo", "2-0-1-0")
+    rest_seconds = request.form.get("rest_seconds", 90)
+    load_note = request.form.get("load_note", "")
+    muscle_group = request.form.get("muscle_group", "full body")
+    superset_group = request.form.get("superset_group") or None
+
+    if title and plan_version_id:
+        execute(
+            """
+            INSERT INTO plan_items
+            (plan_version_id, day_label, item_type, title, sets, set_count, reps, rpe, tempo, rest_seconds, load_note, muscle_group, superset_group, rationale, provenance)
+            VALUES (?, ?, 'exercise', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Coach added exercise', 'admin')
+            """,
+            (plan_version_id, day_label, title, sets, int(sets) if sets.isdigit() else 3, reps, rpe, tempo, rest_seconds, load_note, muscle_group, superset_group),
+        )
+        flash(f"Added '{title}' to plan.", "good")
+    return redirect(url_for("plan_review_view", member_id=member_id))
 
 
 @app.route("/members/<int:member_id>/plan/review")
 @role_required("admin", "trainer")
 def plan_review_view(member_id):
-    """Read-only review screen. Approve/reject/edit post to the plan-version routes."""
+    ensure_plan_views_schema()
     member = row_or_none("members", member_id)
     if not member:
         abort(404)
 
-    # Latest version awaiting a decision, per plan type. No fabricated preview:
-    # if nothing has been generated the screen says so and offers to generate.
     pending_versions = query_all(
         """
         SELECT * FROM plan_versions
@@ -6535,7 +7446,6 @@ def plan_review_view(member_id):
         """,
         (member_id,),
     )
-    # One entry per plan type - showing only the first hid the diet plan entirely.
     seen_types = set()
     versions = []
     for version in pending_versions:
@@ -6545,20 +7455,37 @@ def plan_review_view(member_id):
         versions.append(version)
 
     plans = []
+    movements_list = query_all("SELECT id, name, primary_muscle FROM exercise_library WHERE active = 1 ORDER BY name")
+
     for version in versions:
-        items = query_all(
+        raw_items = query_all(
             "SELECT * FROM plan_items WHERE plan_version_id = ? ORDER BY position ASC, slot_time ASC",
             (version["id"],),
         )
+        items = [dict(i) for i in raw_items]
+
         items_by_day = {}
         for item in items:
             items_by_day.setdefault(item["day_label"] or "Every day", []).append(item)
+
+        vol_summary = weekly_volume(member_id, version["id"])
+
         plans.append({
             "version": version,
-            "items": items,
+            "items_list": items,
             "items_by_day": items_by_day,
             "item_count": len(items),
+            "weekly_volume": vol_summary,
         })
+
+    return render_template(
+        "plan_review.html",
+        member=member,
+        plans=plans,
+        movements_list=movements_list,
+    )
+
+
 
     approved = query_all(
         """
