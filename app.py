@@ -2178,6 +2178,82 @@ def _build_diet_text(member, calories, protein, carbs, fat, food_preference, ite
     return "\n".join(lines)
 
 
+def weekly_volume(member_id, plan_version_id):
+    """Hard sets per muscle group for one plan version.
+
+    Returns [{"muscle_group": str, "sets": int, "min": int, "max": int}, ...]
+    where min/max are the productive range for that muscle (10-20 for most,
+    wider for large groups). Sorted by muscle_group.
+
+    Range rationale: trained lifters typically need ~10-20 hard sets/week/muscle
+    for productive hypertrophy; larger groups (legs, back) tolerate more volume
+    and are capped at 25 here.
+    """
+    rows = query_all(
+        """
+        SELECT pi.muscle_group, SUM(pi.set_count) AS sets
+        FROM plan_items pi
+        JOIN plan_versions pv ON pi.plan_version_id = pv.id
+        WHERE pi.plan_version_id = ?
+          AND pv.member_id = ?
+          AND pi.item_type = 'exercise'
+        GROUP BY pi.muscle_group
+        ORDER BY pi.muscle_group
+        """,
+        (plan_version_id, member_id),
+    )
+    large_groups = {"quads", "hamstrings", "glutes", "lats", "back", "chest"}
+    result = []
+    for row in rows:
+        mg = row["muscle_group"]
+        max_sets = 25 if mg in large_groups else 20
+        result.append({
+            "muscle_group": mg,
+            "sets": row["sets"] or 0,
+            "min": 10,
+            "max": max_sets,
+        })
+    return result
+
+
+def weekly_volume(member_id, plan_version_id):
+    """Hard sets per muscle group for one plan version.
+
+    Returns [{"muscle_group": str, "sets": int, "min": int, "max": int}, ...]
+    where min/max are the productive range for that muscle (10-20 for most,
+    wider for large groups). Sorted by muscle_group.
+
+    Range rationale: trained lifters typically need ~10-20 hard sets/week/muscle
+    for productive hypertrophy; larger groups (legs, back) tolerate more volume
+    and are capped at 25 here.
+    """
+    rows = query_all(
+        """
+        SELECT pi.muscle_group, SUM(pi.set_count) AS sets
+        FROM plan_items pi
+        JOIN plan_versions pv ON pi.plan_version_id = pv.id
+        WHERE pi.plan_version_id = ?
+          AND pv.member_id = ?
+          AND pi.item_type = 'exercise'
+        GROUP BY pi.muscle_group
+        ORDER BY pi.muscle_group
+        """,
+        (plan_version_id, member_id),
+    )
+    large_groups = {"quads", "hamstrings", "glutes", "lats", "back", "chest"}
+    result = []
+    for row in rows:
+        mg = row["muscle_group"]
+        max_sets = 25 if mg in large_groups else 20
+        result.append({
+            "muscle_group": mg,
+            "sets": row["sets"] or 0,
+            "min": 10,
+            "max": max_sets,
+        })
+    return result
+
+
 def generate_rule_based_plans(member):
     from services import circadian_service
     from services.clinical_recommendation_service import get_or_create_health_profile

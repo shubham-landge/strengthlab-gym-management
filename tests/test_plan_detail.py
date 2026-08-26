@@ -400,3 +400,151 @@ def test_render_detail_from_fields_reproduces_legacy_shape():
 def test_render_detail_from_fields_returns_detail_for_recovery():
     item = {"item_type": "recovery", "detail": "10 min easy walk"}
     assert gym_app.render_detail_from_fields(item) == "10 min easy walk"
+# --- weekly_volume -----------------------------------------------------------
+
+def test_weekly_volume_sums_set_count_per_muscle_group_and_excludes_recovery():
+    with gym_app.app.app_context():
+        member = gym_app.query_one("SELECT * FROM members LIMIT 1")
+        gym_app.execute(
+            "DELETE FROM plan_items WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute(
+            "DELETE FROM plan_reviews WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute("DELETE FROM plan_versions WHERE member_id = ?", (member["id"],))
+        gym_app.execute(
+            "INSERT INTO plan_versions (member_id, plan_type, status, provenance, generated_at) VALUES (?, 'workout', 'approved', 'rule', datetime('now'))",
+            (member["id"],),
+        )
+        version_id = gym_app.query_one("SELECT last_insert_rowid() AS id")["id"]
+        conn = gym_app.db()
+        conn.executemany(
+            """
+            INSERT INTO plan_items (plan_version_id, day_label, item_type, title, detail, rationale, set_count, muscle_group, position)
+            VALUES (?, 'Day 1', ?, ?, ?, 'Test', ?, ?, ?)
+            """,
+            [
+                (version_id, "exercise", "Bench Press", "detail", 4, "chest", 0),
+                (version_id, "exercise", "Fly", "detail", 3, "chest", 1),
+                (version_id, "exercise", "Squat", "detail", 5, "quads", 2),
+                (version_id, "recovery", "Cycle", "detail", None, "full body", 3),
+            ],
+        )
+        conn.commit()
+        result = gym_app.weekly_volume(member["id"], version_id)
+        by_mg = {r["muscle_group"]: r for r in result}
+        assert "chest" in by_mg
+        assert by_mg["chest"]["sets"] == 7
+        assert by_mg["chest"]["min"] == 10
+        assert by_mg["chest"]["max"] == 25
+        assert "quads" in by_mg
+        assert by_mg["quads"]["sets"] == 5
+        assert by_mg["quads"]["max"] == 25
+        assert "full body" not in by_mg
+        assert result == sorted(result, key=lambda x: x["muscle_group"])
+
+
+def test_weekly_volume_defaults_to_max_20_for_small_muscles():
+    with gym_app.app.app_context():
+        member = gym_app.query_one("SELECT * FROM members LIMIT 1")
+        gym_app.execute(
+            "DELETE FROM plan_items WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute(
+            "DELETE FROM plan_reviews WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute("DELETE FROM plan_versions WHERE member_id = ?", (member["id"],))
+        gym_app.execute(
+            "INSERT INTO plan_versions (member_id, plan_type, status, provenance, generated_at) VALUES (?, 'workout', 'approved', 'rule', datetime('now'))",
+            (member["id"],),
+        )
+        version_id = gym_app.query_one("SELECT last_insert_rowid() AS id")["id"]
+        gym_app.execute(
+            """
+            INSERT INTO plan_items (plan_version_id, day_label, item_type, title, detail, rationale, set_count, muscle_group, position)
+            VALUES (?, 'Day 1', 'exercise', 'Curl', 'detail', 'Test', 3, 'biceps', 0)
+            """,
+            (version_id,),
+        )
+        result = gym_app.weekly_volume(member["id"], version_id)
+        assert result[0]["max"] == 20
+
+
+# --- weekly_volume -----------------------------------------------------------
+
+def test_weekly_volume_sums_set_count_per_muscle_group_and_excludes_recovery():
+    with gym_app.app.app_context():
+        member = gym_app.query_one("SELECT * FROM members LIMIT 1")
+        gym_app.execute(
+            "DELETE FROM plan_items WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute(
+            "DELETE FROM plan_reviews WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute("DELETE FROM plan_versions WHERE member_id = ?", (member["id"],))
+        gym_app.execute(
+            "INSERT INTO plan_versions (member_id, plan_type, status, provenance, generated_at) VALUES (?, 'workout', 'approved', 'rule', datetime('now'))",
+            (member["id"],),
+        )
+        version_id = gym_app.query_one("SELECT last_insert_rowid() AS id")["id"]
+        conn = gym_app.db()
+        conn.executemany(
+            """
+            INSERT INTO plan_items (plan_version_id, day_label, item_type, title, detail, rationale, set_count, muscle_group, position)
+            VALUES (?, 'Day 1', ?, ?, ?, 'Test', ?, ?, ?)
+            """,
+            [
+                (version_id, "exercise", "Bench Press", "detail", 4, "chest", 0),
+                (version_id, "exercise", "Fly", "detail", 3, "chest", 1),
+                (version_id, "exercise", "Squat", "detail", 5, "quads", 2),
+                (version_id, "recovery", "Cycle", "detail", None, "full body", 3),
+            ],
+        )
+        conn.commit()
+        result = gym_app.weekly_volume(member["id"], version_id)
+        by_mg = {r["muscle_group"]: r for r in result}
+        assert "chest" in by_mg
+        assert by_mg["chest"]["sets"] == 7
+        assert by_mg["chest"]["min"] == 10
+        assert by_mg["chest"]["max"] == 25
+        assert "quads" in by_mg
+        assert by_mg["quads"]["sets"] == 5
+        assert by_mg["quads"]["max"] == 25
+        assert "full body" not in by_mg
+        assert result == sorted(result, key=lambda x: x["muscle_group"])
+
+
+def test_weekly_volume_defaults_to_max_20_for_small_muscles():
+    with gym_app.app.app_context():
+        member = gym_app.query_one("SELECT * FROM members LIMIT 1")
+        gym_app.execute(
+            "DELETE FROM plan_items WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute(
+            "DELETE FROM plan_reviews WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE member_id = ?)",
+            (member["id"],),
+        )
+        gym_app.execute("DELETE FROM plan_versions WHERE member_id = ?", (member["id"],))
+        gym_app.execute(
+            "INSERT INTO plan_versions (member_id, plan_type, status, provenance, generated_at) VALUES (?, 'workout', 'approved', 'rule', datetime('now'))",
+            (member["id"],),
+        )
+        version_id = gym_app.query_one("SELECT last_insert_rowid() AS id")["id"]
+        gym_app.execute(
+            """
+            INSERT INTO plan_items (plan_version_id, day_label, item_type, title, detail, rationale, set_count, muscle_group, position)
+            VALUES (?, 'Day 1', 'exercise', 'Curl', 'detail', 'Test', 3, 'biceps', 0)
+            """,
+            (version_id,),
+        )
+        result = gym_app.weekly_volume(member["id"], version_id)
+        assert result[0]["max"] == 20
+
+
