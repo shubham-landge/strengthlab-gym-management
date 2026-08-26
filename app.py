@@ -5700,6 +5700,225 @@ def reports():
     )
 
 
+@app.route("/settings/catalogue")
+@role_required("admin", "owner")
+def catalogue():
+    tab = request.args.get("tab", "movements")
+    q = request.args.get("q", "").strip()
+
+    movements_query = "SELECT * FROM exercise_library"
+    foods_query = "SELECT * FROM food_library"
+    m_params = []
+    f_params = []
+
+    if q:
+        movements_query += " WHERE name LIKE ? OR movement_pattern LIKE ? OR primary_muscle LIKE ?"
+        term = f"%{q}%"
+        m_params = [term, term, term]
+
+        foods_query += " WHERE name LIKE ? OR category LIKE ? OR exchange_group LIKE ?"
+        f_params = [term, term, term]
+
+    movements_query += " ORDER BY active DESC, name ASC"
+    foods_query += " ORDER BY active DESC, name ASC"
+
+    movements = query_all(movements_query, tuple(m_params))
+    foods = query_all(foods_query, tuple(f_params))
+
+    analyzed_foods = []
+    for food in foods:
+        f_dict = dict(food)
+        kcal = f_dict.get("kcal_100g") or 0
+        p = f_dict.get("protein_100g") or 0
+        c = f_dict.get("carb_100g") or 0
+        f = f_dict.get("fat_100g") or 0
+        expected_kcal = (p * 4) + (c * 4) + (f * 9)
+        discrepancy = False
+        if expected_kcal > 0 and kcal > 0:
+            diff_ratio = abs(kcal - expected_kcal) / max(expected_kcal, 1)
+            if diff_ratio > 0.20:
+                discrepancy = True
+        f_dict["macro_kcal"] = round(expected_kcal, 1)
+        f_dict["discrepancy_warning"] = discrepancy
+        analyzed_foods.append(f_dict)
+
+    return render_template(
+        "catalogue.html",
+        tab=tab,
+        q=q,
+        movements=movements,
+        foods=analyzed_foods,
+    )
+
+
+@app.route("/settings/catalogue/movements/add", methods=["POST"])
+@role_required("admin", "owner")
+def add_movement():
+    name = request.form["name"].strip()
+    if not name:
+        flash("Movement name cannot be empty.", "bad")
+        return redirect(url_for("catalogue", tab="movements"))
+
+    try:
+        execute(
+            """
+            INSERT INTO exercise_library
+            (name, movement_pattern, role, primary_muscle, secondary_muscles, equipment, level, contraindications, cues, regression, progression, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (
+                name,
+                request.form.get("movement_pattern"),
+                request.form.get("role"),
+                request.form.get("primary_muscle"),
+                request.form.get("secondary_muscles"),
+                request.form.get("equipment"),
+                request.form.get("level"),
+                request.form.get("contraindications"),
+                request.form.get("cues"),
+                request.form.get("regression"),
+                request.form.get("progression"),
+            ),
+        )
+        flash(f"Movement '{name}' added successfully.", "good")
+    except sqlite3.IntegrityError:
+        flash(f"Movement '{name}' already exists.", "bad")
+    return redirect(url_for("catalogue", tab="movements"))
+
+
+@app.route("/settings/catalogue/movements/<int:movement_id>/edit", methods=["POST"])
+@role_required("admin", "owner")
+def edit_movement(movement_id):
+    name = request.form["name"].strip()
+    if not name:
+        flash("Movement name cannot be empty.", "bad")
+        return redirect(url_for("catalogue", tab="movements"))
+
+    execute(
+        """
+        UPDATE exercise_library
+        SET name = ?, movement_pattern = ?, role = ?, primary_muscle = ?, secondary_muscles = ?,
+            equipment = ?, level = ?, contraindications = ?, cues = ?, regression = ?, progression = ?
+        WHERE id = ?
+        """,
+        (
+            name,
+            request.form.get("movement_pattern"),
+            request.form.get("role"),
+            request.form.get("primary_muscle"),
+            request.form.get("secondary_muscles"),
+            request.form.get("equipment"),
+            request.form.get("level"),
+            request.form.get("contraindications"),
+            request.form.get("cues"),
+            request.form.get("regression"),
+            request.form.get("progression"),
+            movement_id,
+        ),
+    )
+    flash(f"Movement '{name}' updated.", "good")
+    return redirect(url_for("catalogue", tab="movements"))
+
+
+@app.route("/settings/catalogue/movements/<int:movement_id>/toggle", methods=["POST"])
+@role_required("admin", "owner")
+def toggle_movement(movement_id):
+    item = query_one("SELECT * FROM exercise_library WHERE id = ?", (movement_id,))
+    if item:
+        new_active = 0 if item["active"] else 1
+        execute("UPDATE exercise_library SET active = ? WHERE id = ?", (new_active, movement_id))
+        status_str = "activated" if new_active else "deactivated"
+        flash(f"Movement '{item['name']}' {status_str}.", "good")
+    return redirect(url_for("catalogue", tab="movements"))
+
+
+@app.route("/settings/catalogue/foods/add", methods=["POST"])
+@role_required("admin", "owner")
+def add_food():
+    name = request.form["name"].strip()
+    if not name:
+        flash("Food name cannot be empty.", "bad")
+        return redirect(url_for("catalogue", tab="foods"))
+
+    try:
+        execute(
+            """
+            INSERT INTO food_library
+            (name, category, kcal_100g, protein_100g, carb_100g, fat_100g, vegetarian, vegan, allergens, exchange_group, typical_portion_g, portion_label, source, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (
+                name,
+                request.form.get("category"),
+                float(request.form.get("kcal_100g") or 0),
+                float(request.form.get("protein_100g") or 0),
+                float(request.form.get("carb_100g") or 0),
+                float(request.form.get("fat_100g") or 0),
+                1 if request.form.get("vegetarian") else 0,
+                1 if request.form.get("vegan") else 0,
+                request.form.get("allergens"),
+                request.form.get("exchange_group"),
+                float(request.form.get("typical_portion_g") or 100),
+                request.form.get("portion_label"),
+                request.form.get("source") or "User Added",
+            ),
+        )
+        flash(f"Food '{name}' added successfully.", "good")
+    except sqlite3.IntegrityError:
+        flash(f"Food '{name}' already exists.", "bad")
+    return redirect(url_for("catalogue", tab="foods"))
+
+
+@app.route("/settings/catalogue/foods/<int:food_id>/edit", methods=["POST"])
+@role_required("admin", "owner")
+def edit_food(food_id):
+    name = request.form["name"].strip()
+    if not name:
+        flash("Food name cannot be empty.", "bad")
+        return redirect(url_for("catalogue", tab="foods"))
+
+    execute(
+        """
+        UPDATE food_library
+        SET name = ?, category = ?, kcal_100g = ?, protein_100g = ?, carb_100g = ?, fat_100g = ?,
+            vegetarian = ?, vegan = ?, allergens = ?, exchange_group = ?, typical_portion_g = ?,
+            portion_label = ?, source = ?
+        WHERE id = ?
+        """,
+        (
+            name,
+            request.form.get("category"),
+            float(request.form.get("kcal_100g") or 0),
+            float(request.form.get("protein_100g") or 0),
+            float(request.form.get("carb_100g") or 0),
+            float(request.form.get("fat_100g") or 0),
+            1 if request.form.get("vegetarian") else 0,
+            1 if request.form.get("vegan") else 0,
+            request.form.get("allergens"),
+            request.form.get("exchange_group"),
+            float(request.form.get("typical_portion_g") or 100),
+            request.form.get("portion_label"),
+            request.form.get("source"),
+            food_id,
+        ),
+    )
+    flash(f"Food '{name}' updated.", "good")
+    return redirect(url_for("catalogue", tab="foods"))
+
+
+@app.route("/settings/catalogue/foods/<int:food_id>/toggle", methods=["POST"])
+@role_required("admin", "owner")
+def toggle_food(food_id):
+    item = query_one("SELECT * FROM food_library WHERE id = ?", (food_id,))
+    if item:
+        new_active = 0 if item["active"] else 1
+        execute("UPDATE food_library SET active = ? WHERE id = ?", (new_active, food_id))
+        status_str = "activated" if new_active else "deactivated"
+        flash(f"Food '{item['name']}' {status_str}.", "good")
+    return redirect(url_for("catalogue", tab="foods"))
+
+
+
 @app.route("/members/<int:member_id>/diet.pdf")
 @login_required
 def diet_pdf(member_id):
